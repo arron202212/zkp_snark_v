@@ -1,0 +1,66 @@
+use crate::gadgetlib1::protoboard::{PBConfig, ProtoboardConfig, protoboard};
+use ffec::FieldTConfig;
+use ffec::common::profiling::print_indent;
+use rccell::RcCell;
+pub struct constraint_profiling_entry {
+    indent: usize,
+    annotation: String,
+    count: usize,
+}
+
+pub fn PROFILE_CONSTRAINTST<
+    FieldT: FieldTConfig,
+    PB: PBConfig,
+    P: ProtoboardConfig<FieldT = FieldT, PB = PB>,
+>(
+    pb: &RcCell<P>,
+    annotation: &str,
+) {
+}
+pub fn PROFILE_CONSTRAINTS<FieldT: FieldTConfig, PB: PBConfig>(
+    pb: &RcCell<protoboard<FieldT, PB>>,
+    annotation: &str,
+) {
+}
+// extern Vec<constraint_profiling_entry> constraint_profiling_table;
+
+// #define PROFILE_CONSTRAINTS(&pb, annotation)                             \;
+// for (usize _num_constraints_before = pb.num_constraints(), _iter = (++constraint_profiling_indent, 0), _cp_pos = constraint_profiling_table.len(); \
+//      _iter == 0;                                                    \
+//      constraint_profiling_table.insert(constraint_profiling_table.begin() + _cp_pos, constraint_profiling_entry{--constraint_profiling_indent, annotation, pb.num_constraints() - _num_constraints_before}), \
+//      _iter = 1)
+
+// usize PRINT_CONSTRAINT_PROFILING(); // returns # of top level constraints
+
+use ffec::common::profiling;
+
+// use crate::gadgetlib1::constraint_profiling;
+
+// usize constraint_profiling_indent = 0;
+// Vec<constraint_profiling_entry> constraint_profiling_table;
+
+pub fn PRINT_CONSTRAINT_PROFILING() -> usize {
+    let mut constraint_profiling_table = Vec::<constraint_profiling_entry>::new();
+    let mut accounted = 0;
+    print_indent();
+    print!("Constraint profiling:\n");
+    for ent in &constraint_profiling_table {
+        if ent.indent == 0 {
+            accounted += ent.count;
+        }
+
+        print_indent();
+        for i in 0..ent.indent {
+            print!("  ");
+        }
+        print!(
+            "* Number of constraints in [{}]: {}\n",
+            ent.annotation, ent.count
+        );
+    }
+
+    constraint_profiling_table.clear();
+    let constraint_profiling_indent = 0;
+
+    return accounted;
+}

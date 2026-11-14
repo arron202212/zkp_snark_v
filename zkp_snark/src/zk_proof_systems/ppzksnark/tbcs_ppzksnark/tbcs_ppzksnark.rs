@@ -1,0 +1,268 @@
+//  Declaration of interfaces for a ppzkSNARK for TBCS.
+
+//  This includes:
+//  - pub struct for proving key
+//  - pub struct for verification key
+//  - pub struct for processed verification key
+//  - pub struct for key pair (proving key & verification key)
+//  - pub struct for proof
+//  - generator algorithm
+//  - prover algorithm
+//  - verifier algorithm (with strong or weak input consistency)
+//  - online verifier algorithm (with strong or weak input consistency)
+
+//  The implementation is a straightforward combination of:
+//  (1) a TBCS-to-USCS reduction, and
+//  (2) a ppzkSNARK for USCS.
+
+//  Acronyms:
+
+//  - TBCS = "Two-input Boolean Circuit Satisfiability"
+//  - USCS = "Unitary-Square Constraint System"
+//  - ppzkSNARK = "PreProcessing Zero-Knowledge Succinct Non-interactive ARgument of Knowledge"
+
+use crate::gadgetlib1::gadgets::pairing::pairing_params::ppTConfig;
+use crate::gadgetlib1::pb_variable::{pb_linear_combination, pb_variable};
+use crate::reductions::tbcs_to_uscs::tbcs_to_uscs::{
+    tbcs_to_uscs_instance_map, tbcs_to_uscs_witness_map,
+};
+use crate::zk_proof_systems::ppzksnark::tbcs_ppzksnark::tbcs_ppzksnark_params::{
+    tbcs_ppzksnark_auxiliary_input, tbcs_ppzksnark_circuit, tbcs_ppzksnark_primary_input,
+};
+use crate::zk_proof_systems::ppzksnark::uscs_ppzksnark::uscs_ppzksnark::{
+    uscs_ppzksnark_generator, uscs_ppzksnark_online_verifier_strong_IC,
+    uscs_ppzksnark_online_verifier_weak_IC, uscs_ppzksnark_processed_verification_key,
+    uscs_ppzksnark_proof, uscs_ppzksnark_prover, uscs_ppzksnark_proving_key,
+    uscs_ppzksnark_verification_key, uscs_ppzksnark_verifier_process_vk,
+};
+use ff_curves::Fr;
+use ffec::field_utils::field_utils::convert_bit_vector_to_field_element_vector;
+use tracing::{Level, span};
+
+// /**
+//  * A proving key for the TBCS ppzkSNARK.
+//  */
+#[derive(Default, Clone)]
+pub struct tbcs_ppzksnark_proving_key<ppT: ppTConfig> {
+    pub circuit: tbcs_ppzksnark_circuit,
+    pub uscs_pk: uscs_ppzksnark_proving_key<ppT>,
+}
+impl<ppT: ppTConfig> tbcs_ppzksnark_proving_key<ppT> {
+    pub fn new(circuit: tbcs_ppzksnark_circuit, uscs_pk: uscs_ppzksnark_proving_key<ppT>) -> Self {
+        Self { circuit, uscs_pk }
+    }
+
+    pub fn G1_size(&self) -> usize {
+        self.uscs_pk.G1_size()
+    }
+
+    pub fn G2_size(&self) -> usize {
+        self.uscs_pk.G2_size()
+    }
+
+    pub fn G1_sparse_size(&self) -> usize {
+        self.uscs_pk.G1_sparse_size()
+    }
+
+    pub fn G2_sparse_size(&self) -> usize {
+        self.uscs_pk.G2_sparse_size()
+    }
+
+    pub fn size_in_bits(&self) -> usize {
+        self.uscs_pk.size_in_bits()
+    }
+
+    pub fn print_size(&self) {
+        self.uscs_pk.print_size();
+    }
+}
+
+// /**
+//  * A verification key for the TBCS ppzkSNARK.
+//  */
+pub type tbcs_ppzksnark_verification_key<ppT> = uscs_ppzksnark_verification_key<ppT>;
+
+// /**
+//  * A processed verification key for the TBCS ppzkSNARK.
+//  *
+//  * Compared to a (non-processed) verification key, a processed verification key
+//  * contains a small constant amount of additional pre-computed information that
+//  * enables a faster verification time.
+//  */
+pub type tbcs_ppzksnark_processed_verification_key<ppT> =
+    uscs_ppzksnark_processed_verification_key<ppT>;
+
+// /**
+//  * A key pair for the TBCS ppzkSNARK, which consists of a proving key and a verification key.
+//  */
+#[derive(Default, Clone)]
+pub struct tbcs_ppzksnark_keypair<ppT: ppTConfig> {
+    pub pk: tbcs_ppzksnark_proving_key<ppT>,
+    pub vk: tbcs_ppzksnark_verification_key<ppT>,
+}
+impl<ppT: ppTConfig> tbcs_ppzksnark_keypair<ppT> {
+    pub fn new(
+        pk: tbcs_ppzksnark_proving_key<ppT>,
+        vk: tbcs_ppzksnark_verification_key<ppT>,
+    ) -> Self {
+        Self { pk, vk }
+    }
+}
+
+// /**
+//  * A proof for the TBCS ppzkSNARK.
+//  */
+pub type tbcs_ppzksnark_proof<ppT> = uscs_ppzksnark_proof<ppT>;
+
+// /*
+// Below are four variants of verifier algorithm for the TBCS ppzkSNARK.
+
+// These are the four cases that arise from the following two choices:
+
+// (1) The verifier accepts a (non-processed) verification key or, instead, a processed verification key.
+//     In the latter case, we call the algorithm an "online verifier".
+
+// (2) The verifier checks for "weak" input consistency or, instead, "strong" input consistency.
+//     Strong input consistency requires that |primary_input| = C.num_inputs, whereas
+//     weak input consistency requires that |primary_input| <= C.num_inputs (and
+//     the primary input is implicitly padded with zeros up to length C.num_inputs).
+// */
+// /**
+//  * A generator algorithm for the TBCS ppzkSNARK.
+//  *
+//  * Given a TBCS circuit C, this algorithm produces proving and verification keys for C.
+//  */
+type FieldT<ppT> = Fr<ppT>;
+pub fn tbcs_ppzksnark_generator<ppT: ppTConfig>(
+    circuit: &tbcs_ppzksnark_circuit,
+) -> tbcs_ppzksnark_keypair<ppT> {
+    let span = span!(Level::INFO, "Call to tbcs_ppzksnark_generator").entered();
+    let uscs_cs =
+        tbcs_to_uscs_instance_map::<FieldT<ppT>, pb_variable, pb_linear_combination>(circuit);
+    let uscs_keypair = uscs_ppzksnark_generator::<ppT>(&uscs_cs);
+    span.exit();
+
+    tbcs_ppzksnark_keypair::<ppT>::new(
+        tbcs_ppzksnark_proving_key::<ppT>::new(circuit.clone(), uscs_keypair.pk.clone()),
+        uscs_keypair.vk.clone(),
+    )
+}
+// /**
+//  * A prover algorithm for the TBCS ppzkSNARK.
+//  *
+//  * Given a TBCS primary input X and a TBCS auxiliary input Y, this algorithm
+//  * produces a proof (of knowledge) that attests to the following statement:
+//  *               ``there exists Y such that C(X,Y)=0''.
+//  * Above, C is the TBCS circuit that was given as input to the generator algorithm.
+//  */
+pub fn tbcs_ppzksnark_prover<ppT: ppTConfig>(
+    pk: &tbcs_ppzksnark_proving_key<ppT>,
+    primary_input: &tbcs_ppzksnark_primary_input,
+    auxiliary_input: &tbcs_ppzksnark_auxiliary_input,
+) -> tbcs_ppzksnark_proof<ppT> {
+    // type FieldT=Fr<ppT>;
+
+    let span = span!(Level::INFO, "Call to tbcs_ppzksnark_prover").entered();
+    let uscs_va =
+        tbcs_to_uscs_witness_map::<FieldT<ppT>>(&pk.circuit, primary_input, auxiliary_input);
+    let uscs_pi = convert_bit_vector_to_field_element_vector::<FieldT<ppT>>(primary_input);
+    let uscs_ai = uscs_va[primary_input.len()..].to_vec(); // TODO: faster to just change bacs_to_r1cs_witness_map into two :(
+    let uscs_proof = uscs_ppzksnark_prover::<ppT>(&pk.uscs_pk, &uscs_pi, &uscs_ai);
+    span.exit();
+
+    uscs_proof
+}
+// /**
+//  * Convert a (non-processed) verification key into a processed verification key.
+//  */
+pub fn tbcs_ppzksnark_verifier_process_vk<ppT: ppTConfig>(
+    vk: &tbcs_ppzksnark_verification_key<ppT>,
+) -> tbcs_ppzksnark_processed_verification_key<ppT> {
+    let span = span!(Level::INFO, "Call to tbcs_ppzksnark_verifier_process_vk").entered();
+    let pvk = uscs_ppzksnark_verifier_process_vk::<ppT>(vk);
+    span.exit();
+
+    pvk
+}
+// /**
+//  * A verifier algorithm for the TBCS ppzkSNARK that:
+//  * (1) accepts a non-processed verification key, and
+//  * (2) has weak input consistency.
+//  */
+pub fn tbcs_ppzksnark_verifier_weak_IC<ppT: ppTConfig>(
+    vk: &tbcs_ppzksnark_verification_key<ppT>,
+    primary_input: &tbcs_ppzksnark_primary_input,
+    proof: &tbcs_ppzksnark_proof<ppT>,
+) -> bool {
+    // type FieldT=Fr<ppT>;
+    let span = span!(Level::INFO, "Call to tbcs_ppzksnark_verifier_weak_IC").entered();
+    let uscs_input = convert_bit_vector_to_field_element_vector::<FieldT<ppT>>(primary_input);
+    let pvk = tbcs_ppzksnark_verifier_process_vk::<ppT>(vk);
+    let bit = uscs_ppzksnark_online_verifier_weak_IC::<ppT>(&pvk, &uscs_input, proof);
+    span.exit();
+
+    bit
+}
+// /**
+//  * A verifier algorithm for the TBCS ppzkSNARK that:
+//  * (1) accepts a non-processed verification key, and
+//  * (2) has strong input consistency.
+//  */
+pub fn tbcs_ppzksnark_verifier_strong_IC<ppT: ppTConfig>(
+    vk: &tbcs_ppzksnark_verification_key<ppT>,
+    primary_input: &tbcs_ppzksnark_primary_input,
+    proof: &tbcs_ppzksnark_proof<ppT>,
+) -> bool {
+    // type FieldT=Fr<ppT>;
+    let span = span!(Level::INFO, "Call to tbcs_ppzksnark_verifier_strong_IC").entered();
+    let pvk = tbcs_ppzksnark_verifier_process_vk::<ppT>(vk);
+    let uscs_input = convert_bit_vector_to_field_element_vector::<FieldT<ppT>>(primary_input);
+    let bit = uscs_ppzksnark_online_verifier_strong_IC::<ppT>(&pvk, &uscs_input, proof);
+    span.exit();
+
+    bit
+}
+// /**
+//  * A verifier algorithm for the TBCS ppzkSNARK that:
+//  * (1) accepts a processed verification key, and
+//  * (2) has weak input consistency.
+//  */
+pub fn tbcs_ppzksnark_online_verifier_weak_IC<ppT: ppTConfig>(
+    pvk: &tbcs_ppzksnark_processed_verification_key<ppT>,
+    primary_input: &tbcs_ppzksnark_primary_input,
+    proof: &tbcs_ppzksnark_proof<ppT>,
+) -> bool {
+    // type FieldT=Fr<ppT>;
+    let span = span!(
+        Level::INFO,
+        "Call to tbcs_ppzksnark_online_verifier_weak_IC"
+    )
+    .entered();
+    let uscs_input = convert_bit_vector_to_field_element_vector::<FieldT<ppT>>(primary_input);
+    let bit = uscs_ppzksnark_online_verifier_weak_IC::<ppT>(&pvk, &uscs_input, proof);
+    span.exit();
+
+    bit
+}
+// /**
+//  * A verifier algorithm for the TBCS ppzkSNARK that:
+//  * (1) accepts a processed verification key, and
+//  * (2) has strong input consistency.
+//  */
+pub fn tbcs_ppzksnark_online_verifier_strong_IC<ppT: ppTConfig>(
+    pvk: &tbcs_ppzksnark_processed_verification_key<ppT>,
+    primary_input: &tbcs_ppzksnark_primary_input,
+    proof: &tbcs_ppzksnark_proof<ppT>,
+) -> bool {
+    // type FieldT=Fr<ppT>;
+    let span = span!(
+        Level::INFO,
+        "Call to tbcs_ppzksnark_online_verifier_strong_IC"
+    )
+    .entered();
+    let uscs_input = convert_bit_vector_to_field_element_vector::<FieldT<ppT>>(primary_input);
+    let bit = uscs_ppzksnark_online_verifier_strong_IC::<ppT>(&pvk, &uscs_input, proof);
+    span.exit();
+
+    bit
+}
