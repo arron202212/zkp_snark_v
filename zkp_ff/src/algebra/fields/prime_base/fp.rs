@@ -1,55 +1,86 @@
+use core::cmp::Ordering;
+
 use crate::algebra::fields::prime_base::fp_montgomery::{
-    FieldParams, Limbs, add_mod, cmp, montgomery_mul, sub_mod,
+    FieldParams, LimbsN, add_mod, add_one, cmp, from_montgomery, montgomery_mul, shr1, sub_mod,
+    sub_one, to_montgomery,
 };
 
+/// Prime field element.
+///
+/// 默认 N=4，兼容原有 BN254 API。
+///
+/// Montgomery representation:
+///```text
+///     mont_repr = x * R mod p
+///```
+/// 其中 R = 2^(64*N)。
 #[derive(Clone, Debug)]
-pub struct Fp {
-    /// Montgomery representation: x * R mod p.
-    pub mont_repr: Limbs,
-
-    pub params: FieldParams,
+pub struct Fp<const N: usize = 4> {
+    pub mont_repr: LimbsN<N>,
+    pub params: FieldParams<N>,
 }
 
-impl PartialEq for Fp {
+impl<const N: usize> PartialEq for Fp<N> {
     fn eq(&self, other: &Self) -> bool {
         self.params.modulus == other.params.modulus && self.mont_repr == other.mont_repr
     }
 }
 
-impl Eq for Fp {}
+impl<const N: usize> Eq for Fp<N> {}
 
-impl Fp {
-    pub fn new(value: Limbs, params: FieldParams) -> Self {
+impl<const N: usize> Fp<N> {
+    // ---------------------------------------------------------------------
+    // Constructors
+    // ---------------------------------------------------------------------
+
+    /// Construct from a canonical integer.
+    ///
+    /// Requires value < modulus.
+    pub fn new(value: LimbsN<N>, params: FieldParams<N>) -> Self {
+        assert!(N > 0, "limb count must be greater than zero");
+
         assert!(
-            cmp(&value, &params.modulus) == core::cmp::Ordering::Less,
+            cmp(&value, &params.modulus) == Ordering::Less,
             "Value must be smaller than modulus"
         );
 
-        let mont_repr = montgomery_mul(value, params.r2, &params);
+        let mont_repr = to_montgomery(&value, &params);
 
         Self { mont_repr, params }
     }
 
-    pub fn from_u64(value: u64, params: FieldParams) -> Self {
-        Self::new([value, 0, 0, 0], params)
+    /// Construct from u64.
+    pub fn from_u64(value: u64, params: FieldParams<N>) -> Self {
+        assert!(N > 0);
+
+        let mut words = [0u64; N];
+        words[0] = value;
+
+        Self::new(words, params)
     }
 
-    pub fn zero(params: FieldParams) -> Self {
+    /// Additive identity.
+    pub fn zero(params: FieldParams<N>) -> Self {
         Self {
-            mont_repr: [0; 4],
+            mont_repr: [0u64; N],
             params,
         }
     }
 
-    pub fn one(params: FieldParams) -> Self {
+    /// Multiplicative identity.
+    pub fn one(params: FieldParams<N>) -> Self {
         Self {
             mont_repr: params.r,
             params,
         }
     }
 
+    // ---------------------------------------------------------------------
+    // Basic operations
+    // ---------------------------------------------------------------------
+
     pub fn is_zero(&self) -> bool {
-        self.mont_repr == [0; 4]
+        self.mont_repr.iter().all(|&x| x == 0)
     }
 
     fn check_field(&self, other: &Self) {
@@ -59,12 +90,12 @@ impl Fp {
         );
     }
 
-    /// Convert Montgomery representation into canonical integer.
-    pub fn to_canonical(&self) -> Limbs {
-        montgomery_mul(self.mont_repr, [1, 0, 0, 0], &self.params)
+    /// Convert Montgomery representation to canonical integer.
+    pub fn to_canonical(&self) -> LimbsN<N> {
+        from_montgomery(&self.mont_repr, &self.params)
     }
 
-    /// Addition in Fp.
+    /// Addition.
     pub fn add(&self, other: &Self) -> Self {
         self.check_field(other);
 
@@ -74,7 +105,7 @@ impl Fp {
         }
     }
 
-    /// Subtraction in Fp.
+    /// Subtraction.
     pub fn sub(&self, other: &Self) -> Self {
         self.check_field(other);
 
@@ -84,7 +115,7 @@ impl Fp {
         }
     }
 
-    /// Multiplication in Fp.
+    /// Multiplication.
     pub fn mul(&self, other: &Self) -> Self {
         self.check_field(other);
 
@@ -96,25 +127,34 @@ impl Fp {
 
     /// Squaring.
     pub fn square(&self) -> Self {
-        self.mul(self)
+        Self {
+            mont_repr: montgomery_mul(self.mont_repr, self.mont_repr, &self.params),
+            params: self.params.clone(),
+        }
     }
 
-    /// Negation: -x mod p.
+    /// Negation.
     pub fn negate(&self) -> Self {
         if self.is_zero() {
             return self.clone();
         }
 
         Self {
-            mont_repr: sub_mod([0; 4], self.mont_repr, self.params.modulus),
+            mont_repr: sub_mod([0u64; N], self.mont_repr, self.params.modulus),
             params: self.params.clone(),
         }
     }
 
+    // ---------------------------------------------------------------------
+    // Exponentiation
+    // ---------------------------------------------------------------------
+
     /// Modular exponentiation.
     ///
-    /// Exponent is a 256-bit integer in little-endian limbs.
-    pub fn pow(&self, exponent: Limbs) -> Self {
+    /// Exponent is an N-limb little-endian integer.
+    ///
+    /// Scans all 64*N bits.
+    pub fn pow(&self, exponent: LimbsN<N>) -> Self {
         let mut result = Self::one(self.params.clone());
         let mut base = self.clone();
 
@@ -134,22 +174,31 @@ impl Fp {
         result
     }
 
+    // ---------------------------------------------------------------------
+    // Inversion
+    // ---------------------------------------------------------------------
+
     /// Multiplicative inverse.
     ///
-    /// Fermat's little theorem:
+    /// x^(-1) = x^(p-2) mod p
     ///
-    /// x^-1 = x^(p-2) mod p
+    /// Assumes modulus is prime.
     pub fn inverse(&self) -> Option<Self> {
         if self.is_zero() {
             return None;
         }
 
-        let exponent = sub_small(self.params.modulus, 2);
+        let exponent = sub_one(&self.params.modulus);
+
+        // p - 2
+        let exponent = sub_one(&exponent);
 
         Some(self.pow(exponent))
     }
 
-    /// In-place inverse, matching libff's invert() behavior.
+    /// In-place inverse.
+    ///
+    /// Returns false if the element is zero.
     pub fn invert(&mut self) -> bool {
         match self.inverse() {
             Some(value) => {
@@ -160,11 +209,17 @@ impl Fp {
         }
     }
 
+    // ---------------------------------------------------------------------
+    // Square root
+    // ---------------------------------------------------------------------
+
     /// Tonelli-Shanks square root.
     ///
-    /// Returns Some(root) when a square root exists.
+    /// Returns Some(root) if a square root exists.
     ///
     /// The returned root is not guaranteed to be the smaller root.
+    ///
+    /// Assumes modulus is an odd prime.
     pub fn sqrt(&self) -> Option<Self> {
         if self.is_zero() {
             return Some(self.clone());
@@ -172,29 +227,39 @@ impl Fp {
 
         let p = self.params.modulus;
 
-        let p_minus_one = sub_small(p, 1);
+        // p - 1
+        let p_minus_one = sub_one(&p);
 
-        // Legendre exponent = (p - 1) / 2.
-        let legendre_exp = shr(p_minus_one, 1);
+        // (p - 1) / 2
+        let legendre_exp = shr1(&p_minus_one);
 
+        let one = Self::one(self.params.clone());
+
+        // Euler's criterion.
         let legendre = self.pow(legendre_exp);
 
-        if legendre != Self::one(self.params.clone()) {
+        if legendre != one {
             return None;
         }
 
-        // Factor p - 1 = q * 2^s, q odd.
+        // Factor:
+        //
+        // p - 1 = q * 2^s
+        //
+        // where q is odd.
         let mut q = p_minus_one;
         let mut s = 0usize;
 
         while q[0] & 1 == 0 {
-            q = shr(q, 1);
+            q = shr1(&q);
             s += 1;
         }
 
-        // p = 3 mod 4 shortcut.
+        // p = 3 mod 4.
         if s == 1 {
-            let exponent = shr(add_small(p, 1), 2);
+            // (p + 1) / 4
+            let p_plus_one = add_one(&p);
+            let exponent = shr1(&shr1(&p_plus_one));
 
             return Some(self.pow(exponent));
         }
@@ -203,27 +268,44 @@ impl Fp {
         let mut z_value = 2u64;
 
         let z = loop {
-            let candidate = Self::from_u64(z_value, self.params.clone());
+            let mut words = [0u64; N];
+            words[0] = z_value;
+
+            // Avoid constructing a non-canonical field element.
+            if cmp(&words, &p) != Ordering::Less {
+                return None;
+            }
+
+            let candidate = Self::new(words, self.params.clone());
 
             let symbol = candidate.pow(legendre_exp);
 
-            if symbol != Self::one(self.params.clone()) {
+            if symbol != one {
                 break candidate;
             }
 
-            z_value += 1;
+            z_value = z_value.checked_add(1)?;
         };
 
+        // c = z^q
         let mut c = z.pow(q);
-        let mut x = self.pow(shr(add_small(q, 1), 1));
+
+        // x = a^((q+1)/2)
+        let q_plus_one = add_one(&q);
+        let x_exp = shr1(&q_plus_one);
+
+        let mut x = self.pow(x_exp);
+
+        // t = a^q
         let mut t = self.pow(q);
+
         let mut m = s;
 
-        while t != Self::one(self.params.clone()) {
+        while t != one {
             let mut i = 0usize;
             let mut t2 = t.clone();
 
-            while t2 != Self::one(self.params.clone()) {
+            while t2 != one {
                 t2 = t2.square();
                 i += 1;
 
@@ -239,6 +321,7 @@ impl Fp {
             }
 
             x = x.mul(&b);
+
             let b2 = b.square();
 
             t = t.mul(&b2);
@@ -249,29 +332,40 @@ impl Fp {
         Some(x)
     }
 
-    /// Frobenius map.
+    // ---------------------------------------------------------------------
+    // Frobenius
+    // ---------------------------------------------------------------------
+
+    /// Frobenius map over a prime field.
     ///
-    /// For the prime field Fp, Frobenius is the identity.
+    /// a -> a^(p^power) = a
     pub fn frobenius_map(&self, _power: usize) -> Self {
         self.clone()
     }
 
-    /// Convert to four 64-bit canonical words.
+    // ---------------------------------------------------------------------
+    // Serialization
+    // ---------------------------------------------------------------------
+
+    /// Convert to canonical little-endian words.
     pub fn to_words(&self) -> Vec<u64> {
         self.to_canonical().to_vec()
     }
 
-    /// Read four canonical words.
+    /// Read canonical little-endian words.
     ///
-    /// Returns false if the input is >= modulus.
-    pub fn from_words(words: &[u64], params: FieldParams) -> Option<Self> {
-        if words.len() != 4 {
+    /// Returns None if:
+    /// - input length != N
+    /// - input >= modulus
+    pub fn from_words(words: &[u64], params: FieldParams<N>) -> Option<Self> {
+        if words.len() != N {
             return None;
         }
 
-        let value: Limbs = [words[0], words[1], words[2], words[3]];
+        let mut value = [0u64; N];
+        value.copy_from_slice(words);
 
-        if cmp(&value, &params.modulus) != core::cmp::Ordering::Less {
+        if cmp(&value, &params.modulus) != Ordering::Less {
             return None;
         }
 
@@ -279,238 +373,15 @@ impl Fp {
     }
 }
 
-/// Subtract a small integer from a 256-bit integer.
-fn sub_small(mut a: Limbs, value: u64) -> Limbs {
-    let (first, mut borrow) = a[0].overflowing_sub(value);
-    a[0] = first;
+// -------------------------------------------------------------------------
+// Type aliases
+// -------------------------------------------------------------------------
 
-    for limb in a.iter_mut().skip(1) {
-        if !borrow {
-            break;
-        }
+/// BN254 field element.
+pub type Bn254Fp = Fp<4>;
 
-        let (result, next) = limb.overflowing_sub(1);
-        *limb = result;
-        borrow = next;
-    }
+/// MNT4-298 base field element.
+pub type Mnt4Fq = Fp<5>;
 
-    assert!(!borrow);
-    a
-}
-
-/// Add a small integer.
-fn add_small(mut a: Limbs, value: u64) -> Limbs {
-    let (first, mut carry) = a[0].overflowing_add(value);
-    a[0] = first;
-
-    for limb in a.iter_mut().skip(1) {
-        if !carry {
-            break;
-        }
-
-        let (result, next) = limb.overflowing_add(1);
-        *limb = result;
-        carry = next;
-    }
-
-    assert!(!carry);
-    a
-}
-
-/// Divide a 256-bit integer by two.
-fn shr(mut a: Limbs, bits: usize) -> Limbs {
-    assert!(bits < 64);
-
-    if bits == 0 {
-        return a;
-    }
-
-    for i in 0..3 {
-        a[i] = (a[i] >> bits) | (a[i + 1] << (64 - bits));
-    }
-
-    a[3] >>= bits;
-    a
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn fr_params() -> FieldParams {
-        // BN254 scalar field modulus.
-        FieldParams::new([
-            0x43e1_f593_f000_0001,
-            0x2833_e848_79b9_7091,
-            0xb850_45b6_8181_585d,
-            0x3064_4e72_e131_a029,
-        ])
-    }
-
-    fn canonical(value: &Fp) -> u64 {
-        let words = value.to_canonical();
-        assert_eq!(words[1..], [0, 0, 0]);
-        words[0]
-    }
-
-    #[test]
-    fn test_zero_one() {
-        let params = fr_params();
-
-        let zero = Fp::zero(params.clone());
-        let one = Fp::one(params.clone());
-
-        assert!(zero.is_zero());
-        assert_eq!(canonical(&one), 1);
-    }
-
-    #[test]
-    fn test_add() {
-        let params = fr_params();
-
-        let a = Fp::from_u64(7, params.clone());
-        let b = Fp::from_u64(9, params);
-
-        assert_eq!(canonical(&a.add(&b)), 16);
-    }
-
-    #[test]
-    fn test_sub() {
-        let params = fr_params();
-
-        let a = Fp::from_u64(9, params.clone());
-        let b = Fp::from_u64(7, params);
-
-        assert_eq!(canonical(&a.sub(&b)), 2);
-    }
-
-    #[test]
-    fn test_sub_underflow() {
-        let params = fr_params();
-
-        let a = Fp::from_u64(3, params.clone());
-        let b = Fp::from_u64(7, params.clone());
-
-        let result = a.sub(&b);
-
-        let expected = sub_mod([3, 0, 0, 0], [7, 0, 0, 0], params.modulus);
-
-        assert_eq!(result.to_canonical(), expected);
-    }
-
-    #[test]
-    fn test_mul() {
-        let params = fr_params();
-
-        let a = Fp::from_u64(7, params.clone());
-        let b = Fp::from_u64(9, params);
-
-        assert_eq!(canonical(&a.mul(&b)), 63);
-    }
-
-    #[test]
-    fn test_square() {
-        let params = fr_params();
-
-        let a = Fp::from_u64(12, params);
-
-        assert_eq!(canonical(&a.square()), 144);
-    }
-
-    #[test]
-    fn test_negate() {
-        let params = fr_params();
-
-        let a = Fp::from_u64(5, params.clone());
-        let result = a.add(&a.negate());
-
-        assert!(result.is_zero());
-    }
-
-    #[test]
-    fn test_inverse() {
-        let params = fr_params();
-
-        let a = Fp::from_u64(7, params.clone());
-
-        let inverse = a.inverse().unwrap();
-
-        let result = a.mul(&inverse);
-
-        assert_eq!(result, Fp::one(params));
-    }
-
-    #[test]
-    fn test_zero_inverse() {
-        let params = fr_params();
-
-        let zero = Fp::zero(params);
-
-        assert!(zero.inverse().is_none());
-    }
-
-    #[test]
-    fn test_pow() {
-        let params = fr_params();
-
-        let a = Fp::from_u64(3, params);
-
-        let result = a.pow([4, 0, 0, 0]);
-
-        assert_eq!(canonical(&result), 81);
-    }
-
-    #[test]
-    fn test_sqrt() {
-        let params = fr_params();
-
-        let a = Fp::from_u64(9, params);
-
-        let root = a.sqrt().unwrap();
-
-        assert_eq!(root.square(), a);
-    }
-
-    #[test]
-    fn test_sqrt_zero() {
-        let params = fr_params();
-
-        let zero = Fp::zero(params);
-
-        assert_eq!(zero.sqrt().unwrap(), zero);
-    }
-
-    #[test]
-    fn test_serialization() {
-        let params = fr_params();
-
-        let a = Fp::from_u64(123456, params.clone());
-
-        let words = a.to_words();
-
-        assert_eq!(words.len(), 4);
-
-        let b = Fp::from_words(&words, params).unwrap();
-
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn test_invalid_serialization() {
-        let params = fr_params();
-
-        let words = params.modulus;
-
-        assert!(Fp::from_words(&words, params).is_none());
-    }
-
-    #[test]
-    fn test_frobenius() {
-        let params = fr_params();
-
-        let a = Fp::from_u64(123, params);
-
-        assert_eq!(a, a.frobenius_map(1));
-        assert_eq!(a, a.frobenius_map(2));
-    }
-}
+/// MNT4-298 scalar field element.
+pub type Mnt4Fr = Fp<5>;

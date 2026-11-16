@@ -1,335 +1,492 @@
-//  Declaration of interfaces for basic polynomial operation routines.
+use std::fmt;
 
-// /**
-//  * Returns true if polynomial A is a zero polynomial.
-//  */
-//
-// bool _is_zero(a:&Vec<FieldT>);
+use super::field::PolynomialField;
 
-// /**
-//  * Removes extraneous zero entries from in vector representation of polynomial.
-//  * Example - Degree-4 Polynomial: [0, 1, 2, 3, 4, 0, 0, 0, 0] -> [0, 1, 2, 3, 4]
-//  * Note: Simplest condensed form is a zero polynomial of vector form: [0]
-//  */
-//
-// pub fn  _condense(a:&Vec<FieldT>);
-
-// /**
-//  * Compute the reverse polynomial up to vector size n (degree n-1).
-//  * Below we make use of the reversal endomorphism definition from
-//  * [Bostan, Lecerf, & Schost, 2003. Tellegen's Principle in Practice, on page 38].
-//  */
-//
-// pub fn  _reverse(a:&Vec<FieldT>,  usize n);
-
-// /**
-//  * Computes the standard polynomial addition, polynomial A + polynomial B, and stores result in polynomial C.
-//  */
-//
-// pub fn  _polynomial_addition(c:&Vec<FieldT>, a:&Vec<FieldT>,  b:&Vec<FieldT>);
-
-// /**
-//  * Computes the standard polynomial subtraction, polynomial A - polynomial B, and stores result in polynomial C.
-//  */
-//
-// pub fn  _polynomial_subtraction(c:&Vec<FieldT>, a:&Vec<FieldT>,  b:&Vec<FieldT>);
-
-// /**
-//  * Perform the multiplication of two polynomials, polynomial A * polynomial B, and stores result in polynomial C.
-//  */
-//
-// pub fn  _polynomial_multiplication(c:&Vec<FieldT>, a:&Vec<FieldT>,  b:&Vec<FieldT>);
-
-// /**
-//  * Perform the multiplication of two polynomials, polynomial A * polynomial B, using FFT, and stores result in polynomial C.
-//  */
-//
-// pub fn  _polynomial_multiplication_on_fft(c:&Vec<FieldT>, a:&Vec<FieldT>,  b:&Vec<FieldT>);
-
-// /**
-//  * Perform the multiplication of two polynomials, polynomial A * polynomial B, using Kronecker Substitution, and stores result in polynomial C.
-//  */
-//
-// pub fn  _polynomial_multiplication_on_kronecker(c:&Vec<FieldT>, a:&Vec<FieldT>,  b:&Vec<FieldT>);
-
-// /**
-//  * Compute the transposed, polynomial multiplication of vector a and vector b.
-//  * Below we make use of the transposed multiplication definition from
-//  * [Bostan, Lecerf, & Schost, 2003. Tellegen's Principle in Practice, on page 39].
-//  */
-//
-// Vec<FieldT> _polynomial_multiplication_transpose( usize &n, a:&Vec<FieldT>,  c:&Vec<FieldT>);
-
-// /**
-//  * Perform the standard Euclidean Division algorithm.
-//  * Input: Polynomial A, Polynomial B, where A / B
-//  * Output: Polynomial Q, Polynomial R, such that A = (Q * B) + R.
-//  */
-//
-// pub fn  _polynomial_division(q:&Vec<FieldT>, r:&Vec<FieldT>, a:&Vec<FieldT>,  b:&Vec<FieldT>);
-
-use crate::evaluation_domain::domains::basic_radix2_domain_aux;
-use crate::kronecker_substitution::kronecker_substitution;
-use crate::polynomial_arithmetic::basic_operations::kronecker_substitution::kronecker_substitution;
-use crate::polynomial_arithmetic::xgcd::_polynomial_xgcd;
-use crate::tools::exceptions;
-use ffec::FieldTConfig;
-use ffec::algebra::field_utils::field_utils::get_root_of_unity_for_not_double;
-use ffec::common::utils::get_power_of_two;
-use ffec::common::utils::log2;
-// #ifdef MULTICORE
-//#include <omp.h>
-
-//
-pub fn _is_zero<FieldT: num_traits::Zero + std::cmp::PartialEq>(a: &Vec<FieldT>) -> bool {
-    a.iter().all(|i| i == &FieldT::zero())
-    // return std::all_of(a.begin(), a.end(), [](FieldT i) { return i == FieldT::zero(); });
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PolynomialError {
+    DivisionByZeroPolynomial,
+    NonInvertibleLeadingCoefficient,
+    InvalidTransposeSize {
+        a_len: usize,
+        n: usize,
+        c_len: usize,
+    },
 }
 
-//
-pub fn _condense<FieldT: num_traits::Zero + std::cmp::PartialEq>(a: &mut Vec<FieldT>) {
-    while a.last().is_some_and(|v| v == &FieldT::zero()) {
+impl fmt::Display for PolynomialError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DivisionByZeroPolynomial => {
+                write!(f, "division by zero polynomial")
+            }
+            Self::NonInvertibleLeadingCoefficient => {
+                write!(f, "leading coefficient is not invertible")
+            }
+            Self::InvalidTransposeSize { a_len, n, c_len } => {
+                write!(
+                    f,
+                    "invalid transpose multiplication sizes: a_len={}, n={}, c_len={}",
+                    a_len, n, c_len
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for PolynomialError {}
+
+/// 判断多项式是否为零。
+///
+/// 空向量也表示零多项式。
+pub fn is_zero<F: PolynomialField>(a: &[F]) -> bool {
+    a.iter().all(|x| x.is_zero())
+}
+
+/// 删除最高次项的连续零系数。
+///
+/// 零多项式统一表示为空 Vec。
+pub fn condense<F: PolynomialField>(a: &mut Vec<F>) {
+    while a.last().is_some_and(|x| x.is_zero()) {
         a.pop();
     }
 }
 
-//
-pub fn _reverse<FieldT: num_traits::Zero + Clone>(a: &mut Vec<FieldT>, n: usize) {
-    // std::reverse(a.begin(), a.end());
+/// 反转多项式系数，并调整为指定长度。
+///
+/// 与 C++ _reverse 对应：
+/// 1. reverse
+/// 2. resize(n)
+///
+/// 如果 n 大于原长度，在末尾补零。
+pub fn reverse<F: PolynomialField>(a: &mut Vec<F>, n: usize, params: &F::Params) {
     a.reverse();
-    a.resize(n, FieldT::zero());
+    a.resize_with(n, || F::zero(params));
 }
 
-//
-pub fn _polynomial_addition<FieldT: num_traits::Zero + Clone + std::cmp::PartialEq>(
-    c: &mut Vec<FieldT>,
-    a: &Vec<FieldT>,
-    b: &Vec<FieldT>,
-) {
-    if _is_zero(a) {
-        *c = b.clone();
-    } else if _is_zero(b) {
-        *c = a.clone();
-    } else {
-        let a_size = a.len();
-        let b_size = b.len();
+/// 多项式加法。
+pub fn polynomial_addition<F: PolynomialField>(a: &[F], b: &[F], params: &F::Params) -> Vec<F> {
+    if is_zero(a) {
+        let mut result = b.to_vec();
+        condense(&mut result);
+        return result;
+    }
 
-        if a_size > b_size {
-            // c.resize(a_size,FieldT::zero());
-            // std::transform(b.begin(), b.end(), a.begin(), c.begin(), std::plus<FieldT>());
-            // std::copy(a.begin() + b_size, a.end(), c.begin() + b_size);
-            // let mut c:Vec<_>=b.iter().zip(&a).map(|(x,y)| x+y).collect();
-            c.resize(a_size, FieldT::zero());
-            b.iter().zip(a).enumerate().for_each(|(i, (x, y))| {
-                c[i] = x.clone() + y.clone();
-            });
-            c[b_size..].clone_from_slice(&a[b_size..]);
-        } else {
-            // c.resize(b_size,FieldT::zero());
-            // std::transform(a.begin(), a.end(), b.begin(), c.begin(), std::plus<FieldT>());
-            // std::copy(b.begin() + a_size, b.end(), c.begin() + a_size);
-            let mut c: Vec<_> = a
-                .iter()
-                .zip(b)
-                .map(|(x, y)| x.clone() + y.clone())
-                .collect();
-            c.resize(b_size, FieldT::zero());
-            a.iter().zip(b).enumerate().for_each(|(i, (x, y))| {
-                c[i] = x.clone() + y.clone();
-            });
-            c[a_size..].clone_from_slice(&b[a_size..]);
+    if is_zero(b) {
+        let mut result = a.to_vec();
+        condense(&mut result);
+        return result;
+    }
+
+    let size = a.len().max(b.len());
+    let mut result = Vec::with_capacity(size);
+
+    for i in 0..size {
+        let value = match (a.get(i), b.get(i)) {
+            (Some(x), Some(y)) => x.add(y),
+            (Some(x), None) => x.clone(),
+            (None, Some(y)) => y.clone(),
+            (None, None) => F::zero(params),
+        };
+
+        result.push(value);
+    }
+
+    condense(&mut result);
+    result
+}
+
+/// 多项式减法。
+pub fn polynomial_subtraction<F: PolynomialField>(a: &[F], b: &[F], params: &F::Params) -> Vec<F> {
+    if is_zero(b) {
+        let mut result = a.to_vec();
+        condense(&mut result);
+        return result;
+    }
+
+    if is_zero(a) {
+        let mut result: Vec<F> = b.iter().map(|x| F::zero(params).sub(x)).collect();
+
+        condense(&mut result);
+        return result;
+    }
+
+    let size = a.len().max(b.len());
+    let mut result = Vec::with_capacity(size);
+
+    for i in 0..size {
+        let value = match (a.get(i), b.get(i)) {
+            (Some(x), Some(y)) => x.sub(y),
+            (Some(x), None) => x.clone(),
+            (None, Some(y)) => F::zero(params).sub(y),
+            (None, None) => F::zero(params),
+        };
+
+        result.push(value);
+    }
+
+    condense(&mut result);
+    result
+}
+
+/// 多项式乘法：朴素 O(n*m) 算法。
+///
+/// 结果系数顺序仍然是低次到高次。
+///
+/// 这是正确性基线。后续接入 radix-2 FFT 后，
+/// polynomial_multiplication 可以切换到 FFT 实现。
+pub fn polynomial_multiplication<F: PolynomialField>(
+    a: &[F],
+    b: &[F],
+    params: &F::Params,
+) -> Vec<F> {
+    if is_zero(a) || is_zero(b) {
+        return Vec::new();
+    }
+
+    let result_len = a.len() + b.len() - 1;
+
+    let mut result: Vec<F> = (0..result_len).map(|_| F::zero(params)).collect();
+
+    for (i, ai) in a.iter().enumerate() {
+        for (j, bj) in b.iter().enumerate() {
+            let product = ai.mul(bj);
+            result[i + j] = result[i + j].add(&product);
         }
     }
 
-    _condense(c);
+    condense(&mut result);
+    result
 }
 
-//
-pub fn _polynomial_subtraction<
-    FieldT: num_traits::Zero
-        + Clone
-        + std::cmp::PartialEq
-        + std::ops::Neg<Output = FieldT>
-        + std::ops::Sub<Output = FieldT>,
->(
-    c: &mut Vec<FieldT>,
-    a: &Vec<FieldT>,
-    b: &Vec<FieldT>,
-) {
-    if _is_zero(b) {
-        *c = a.clone();
-    } else if _is_zero(a) {
-        c.resize(b.len(), FieldT::zero());
-        // std::transform(b.begin(), b.end(), c.begin(), std::negate<FieldT>());
-        b.iter().enumerate().for_each(|(i, v)| {
-            c[i] = -v.clone();
-        });
-    } else {
-        let a_size = a.len();
-        let b_size = b.len();
-
-        if a_size > b_size {
-            c.resize(a_size, FieldT::zero());
-            // std::transform(a.begin(), a.begin() + b_size, b.begin(), c.begin(), std::minus<FieldT>());
-            // std::copy(a.begin() + b_size, a.end(), c.begin() + b_size);
-            a.iter()
-                .take(b_size)
-                .zip(b)
-                .enumerate()
-                .for_each(|(i, (x, y))| {
-                    c[i] = x.clone() - y.clone();
-                });
-            c[b_size..].clone_from_slice(&a[b_size..]);
-        } else {
-            c.resize(b_size, FieldT::zero());
-            // std::transform(a.begin(), a.end(), b.begin(), c.begin(), std::minus<FieldT>());
-            // std::transform(b.begin() + a_size, b.end(), c.begin() + a_size, std::negate<FieldT>());
-            a.iter().zip(b).enumerate().for_each(|(i, (x, y))| {
-                c[i] = x.clone() - y.clone();
-            });
-            b.iter().enumerate().skip(a_size).for_each(|(i, v)| {
-                c[i] = -v.clone();
-            });
-        }
-    }
-
-    _condense(c);
-}
-
-pub fn _polynomial_multiplication<FieldT: FieldTConfig>(
-    c: &mut Vec<FieldT>,
-    a: &Vec<FieldT>,
-    b: &Vec<FieldT>,
-) {
-    _polynomial_multiplication_on_fft(c, a, b);
-}
-
-pub fn _polynomial_multiplication_on_fft<FieldT: FieldTConfig>(
-    c: &mut Vec<FieldT>,
-    a: &Vec<FieldT>,
-    b: &Vec<FieldT>,
-) {
-    let n = get_power_of_two(a.len() + b.len() - 1);
-    let omega = get_root_of_unity_for_not_double::<FieldT>(n);
-
-    let mut u = a.clone();
-    let mut v = b.clone();
-    u.resize(n, FieldT::zero());
-    v.resize(n, FieldT::zero());
-    c.resize(n, FieldT::zero());
-
-    // #ifdef MULTICORE
-    //     _basic_parallel_radix2_FFT(u, omega);
-    //     _basic_parallel_radix2_FFT(v, omega);
-    // #else
-    //     _basic_serial_radix2_FFT(u, omega);
-    //     _basic_serial_radix2_FFT(v, omega);
-
-    // std::transform(u.begin(), u.end(), v.begin(), c.begin(), std::multiplies<FieldT>());
-    u.iter().zip(v).enumerate().for_each(|(i, (x, y))| {
-        c[i] = x.clone() * y.clone();
-    });
-
-    // #ifdef MULTICORE
-    //     _basic_parallel_radix2_FFT(c, omega.inverse());
-    // #else
-    //     _basic_serial_radix2_FFT(c, omega.inverse());
-
-    //  let mut  sconst = FieldT::from(n).inverse();
-    // std::transform(c.begin(), c.end(), c.begin(), std::bind(std::multiplies<FieldT>(), sconst, std::placeholders::_1));
-    // c.iter_mut().for_each(|v|{
-    //             *v*=sconst.clone();
-    //     });
-    _condense(c);
-}
-
-pub fn _polynomial_multiplication_on_kronecker<
-    FieldT: std::convert::From<usize>
-        + std::ops::Mul<Output = FieldT>
-        + std::cmp::Ord
-        + std::clone::Clone
-        + std::ops::AddAssign
-        + num_traits::Zero
-        + std::cmp::PartialEq,
->(
-    c: &mut Vec<FieldT>,
-    a: &Vec<FieldT>,
-    b: &Vec<FieldT>,
-) {
-    kronecker_substitution(c, a, b);
-}
-
-pub fn _polynomial_multiplication_transpose<FieldT: FieldTConfig>(
+/// 与 libfqfft 的转置多项式乘法对应。
+///
+/// 输入：
+/// - n：要求的输出参数
+/// - a：长度 m 的多项式
+/// - c：另一个多项式
+///
+/// 输出：
+/// product(reverse(a, m) * c)[m-1 .. m+n]
+///
+/// 返回 n+1 个系数。
+pub fn polynomial_multiplication_transpose<F: PolynomialField>(
     n: usize,
-    a: &Vec<FieldT>,
-    c: &Vec<FieldT>,
-) -> eyre::Result<Vec<FieldT>> {
+    a: &[F],
+    c: &[F],
+    params: &F::Params,
+) -> Result<Vec<F>, PolynomialError> {
     let m = a.len();
-    if c.len() - 1 > m + n {
-        eyre::bail!("expected c.len() - 1 <= m + n");
+
+    if m == 0 {
+        return Ok(Vec::new());
     }
 
-    let mut r = a.clone();
-    _reverse(&mut r, m);
-    let rr = r.clone();
-    _polynomial_multiplication(&mut r, &rr, c);
-
-    //Determine Middle Product
-    let mut result = vec![];
-    for i in m..n + m {
-        result.push(r[i].clone());
+    // C++ 原条件：
+    // c.size() - 1 > m + n
+    //
+    // 对空 c 的情况单独处理，避免 size_t 下溢。
+    if c.is_empty() || c.len() - 1 > m.saturating_add(n) {
+        return Err(PolynomialError::InvalidTransposeSize {
+            a_len: m,
+            n,
+            c_len: c.len(),
+        });
     }
+
+    let mut reversed_a = a.to_vec();
+    reverse(&mut reversed_a, m, params);
+
+    let product = polynomial_multiplication(&reversed_a, c, params);
+
+    let start = m - 1;
+    let end = m.saturating_add(n);
+
+    let mut result = Vec::with_capacity(n.saturating_add(1));
+
+    for i in start..end {
+        result.push(product.get(i).cloned().unwrap_or_else(|| F::zero(params)));
+    }
+
     Ok(result)
 }
 
-pub fn _polynomial_division<
-    FieldT: num_traits::One
-        + Clone
-        + std::ops::SubAssign
-        + std::ops::Sub
-        + std::ops::Mul
-        + std::ops::AddAssign
-        + num_traits::Zero
-        + Clone
-        + std::cmp::PartialEq,
->(
-    q: &mut Vec<FieldT>,
-    r: &mut Vec<FieldT>,
-    a: &Vec<FieldT>,
-    b: &Vec<FieldT>,
-) {
-    let d = b.len() - 1; //Degree of B
-    let c = FieldT::one(); //b.last().unwrap().inverse(); //Inverse of Leading Coefficient of B
-    *r = a.clone();
-    *q = vec![FieldT::zero(); r.len()];
+/// 多项式除法。
+///
+/// 返回 (quotient, remainder)，满足：
+///```text
+///     a = quotient * b + remainder
+///```
+/// 且 remainder 的次数小于 b 的次数。
+///
+/// q 和 r 都采用低次项在前的系数顺序。
+pub fn polynomial_division<F: PolynomialField>(
+    a: &[F],
+    b: &[F],
+    params: &F::Params,
+) -> Result<(Vec<F>, Vec<F>), PolynomialError> {
+    let mut dividend = a.to_vec();
+    let mut divisor = b.to_vec();
 
-    let mut r_deg = r.len() - 1;
-    let mut shift;
+    condense(&mut dividend);
+    condense(&mut divisor);
 
-    while (r_deg >= d && !_is_zero(r)) {
-        if r_deg >= d {
-            shift = r_deg - d;
-        } else {
-            shift = 0;
-        }
-
-        let mut lead_coeff = r.last().unwrap().clone() * c.clone();
-
-        q[shift] += lead_coeff.clone();
-
-        if b.len() + shift + 1 > r.len() {
-            r.resize(b.len() + shift + 1, FieldT::zero());
-        }
-        let glambda = |x: FieldT, y: FieldT| {
-            return y - (x * lead_coeff.clone());
-        };
-        // std::transform(b.begin(), b.end(), r.begin() + shift, r.begin() + shift, glambda);
-        r.iter_mut().skip(shift).zip(b).for_each(|(y, x)| {
-            *y -= x.clone() * lead_coeff.clone();
-        });
-        _condense(r);
-
-        r_deg = r.len() - 1;
+    if divisor.is_empty() {
+        return Err(PolynomialError::DivisionByZeroPolynomial);
     }
-    _condense(q);
+
+    if dividend.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+
+    if dividend.len() < divisor.len() {
+        return Ok((Vec::new(), dividend));
+    }
+
+    let leading_inverse = divisor
+        .last()
+        .expect("divisor is nonempty")
+        .inverse()
+        .ok_or(PolynomialError::NonInvertibleLeadingCoefficient)?;
+
+    let quotient_len = dividend.len() - divisor.len() + 1;
+
+    let mut quotient: Vec<F> = (0..quotient_len).map(|_| F::zero(params)).collect();
+
+    let mut remainder = dividend;
+
+    while !remainder.is_empty() && remainder.len() >= divisor.len() {
+        let shift = remainder.len() - divisor.len();
+
+        let lead = remainder
+            .last()
+            .expect("remainder is nonempty")
+            .mul(&leading_inverse);
+
+        quotient[shift] = quotient[shift].add(&lead);
+
+        // remainder -= divisor * lead * x^shift
+        for (i, coefficient) in divisor.iter().enumerate() {
+            let product = coefficient.mul(&lead);
+            let index = i + shift;
+
+            remainder[index] = remainder[index].sub(&product);
+        }
+
+        condense(&mut remainder);
+    }
+
+    condense(&mut quotient);
+    condense(&mut remainder);
+
+    Ok((quotient, remainder))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct TestField(u64);
+
+    const MODULUS: u64 = 97;
+
+    impl PolynomialField for TestField {
+        type Params = u64;
+
+        fn zero(_: &u64) -> Self {
+            Self(0)
+        }
+
+        fn one(_: &u64) -> Self {
+            Self(1)
+        }
+
+        fn from_u64(value: u64, _: &u64) -> Self {
+            Self(value % MODULUS)
+        }
+
+        fn add(&self, rhs: &Self) -> Self {
+            Self((self.0 + rhs.0) % MODULUS)
+        }
+
+        fn sub(&self, rhs: &Self) -> Self {
+            Self((self.0 + MODULUS - rhs.0) % MODULUS)
+        }
+
+        fn mul(&self, rhs: &Self) -> Self {
+            Self((self.0 * rhs.0) % MODULUS)
+        }
+        fn one_like(&self) -> Self {
+            Self(1)
+        }
+        fn from_u64_like(&self, value: u64) -> Self {
+            TestField(value % 97)
+        }
+        fn inverse(&self) -> Option<Self> {
+            if self.0 == 0 {
+                return None;
+            }
+
+            let mut t: i64 = 0;
+            let mut new_t: i64 = 1;
+            let mut r: i64 = MODULUS as i64;
+            let mut new_r: i64 = self.0 as i64;
+
+            while new_r != 0 {
+                let q = r / new_r;
+
+                (t, new_t) = (new_t, t - q * new_t);
+                (r, new_r) = (new_r, r - q * new_r);
+            }
+
+            if r != 1 {
+                return None;
+            }
+
+            Some(Self(t.rem_euclid(MODULUS as i64) as u64))
+        }
+
+        fn is_zero(&self) -> bool {
+            self.0 == 0
+        }
+
+        fn pow_usize(&self, exponent: usize) -> Self {
+            let mut base = self.clone();
+            let mut exp = exponent;
+            let mut result = Self(1);
+
+            while exp > 0 {
+                if exp & 1 == 1 {
+                    result = result.mul(&base);
+                }
+
+                base = base.mul(&base);
+                exp >>= 1;
+            }
+
+            result
+        }
+    }
+
+    fn f(x: u64) -> TestField {
+        TestField(x % MODULUS)
+    }
+
+    fn values(a: &[TestField]) -> Vec<u64> {
+        a.iter().map(|x| x.0).collect()
+    }
+
+    #[test]
+    fn test_is_zero_and_condense() {
+        assert!(is_zero::<TestField>(&[]));
+        assert!(is_zero(&[f(0), f(0)]));
+
+        let mut p = vec![f(1), f(2), f(0), f(0)];
+        condense(&mut p);
+
+        assert_eq!(values(&p), vec![1, 2]);
+    }
+
+    #[test]
+    fn test_addition() {
+        let a = vec![f(1), f(2)];
+        let b = vec![f(3), f(4), f(5)];
+
+        let result = polynomial_addition(&a, &b, &97);
+
+        assert_eq!(values(&result), vec![4, 6, 5]);
+    }
+
+    #[test]
+    fn test_subtraction() {
+        let a = vec![f(1), f(2)];
+        let b = vec![f(3), f(4), f(5)];
+
+        let result = polynomial_subtraction(&a, &b, &97);
+
+        assert_eq!(values(&result), vec![95, 95, 92]);
+    }
+
+    #[test]
+    fn test_multiplication() {
+        // (1 + 2x) * (3 + 4x)
+        // = 3 + 10x + 8x^2
+
+        let a = vec![f(1), f(2)];
+        let b = vec![f(3), f(4)];
+
+        let result = polynomial_multiplication(&a, &b, &97);
+
+        assert_eq!(values(&result), vec![3, 10, 8]);
+    }
+
+    #[test]
+    fn test_transpose_multiplication() {
+        // a = [1, 2], m = 2
+        // reverse(a, 2) = [2, 1]
+        // c = [3, 4, 5]
+        //
+        // product = [6, 11, 14, 5]
+        //
+        // n = 1
+        // result = product[1..3] = [11, 14]
+
+        let a = vec![f(1), f(2)];
+        let c = vec![f(3), f(4), f(5)];
+
+        let result = polynomial_multiplication_transpose(1, &a, &c, &97).unwrap();
+
+        assert_eq!(values(&result), vec![11, 14]);
+    }
+
+    #[test]
+    fn test_division_exact() {
+        // (1 + 3x + 2x²) / (1 + x)
+        // = 1 + 2x
+
+        let a = vec![f(1), f(3), f(2)];
+        let b = vec![f(1), f(1)];
+
+        let (q, r) = polynomial_division(&a, &b, &97).unwrap();
+
+        assert_eq!(values(&q), vec![1, 2]);
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn test_division_with_remainder() {
+        // (1 + x²) / (1 + x)
+        // = (x - 1) * (x + 1) + 2
+        //
+        // Mod 97: x - 1 = 96 + x
+
+        let a = vec![f(1), f(0), f(1)];
+        let b = vec![f(1), f(1)];
+
+        let (q, r) = polynomial_division(&a, &b, &97).unwrap();
+
+        assert_eq!(values(&q), vec![96, 1]);
+        assert_eq!(values(&r), vec![2]);
+    }
+
+    #[test]
+    fn test_division_by_zero() {
+        let a = vec![f(1), f(2)];
+        let b: Vec<TestField> = vec![];
+
+        assert_eq!(
+            polynomial_division(&a, &b, &97),
+            Err(PolynomialError::DivisionByZeroPolynomial),
+        );
+    }
+
+    #[test]
+    fn test_zero_polynomial_multiplication() {
+        let a = vec![f(1), f(2)];
+        let b = vec![f(0), f(0)];
+
+        let result = polynomial_multiplication(&a, &b, &97);
+
+        assert!(result.is_empty());
+    }
 }

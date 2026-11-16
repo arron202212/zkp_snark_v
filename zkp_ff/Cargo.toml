@@ -16,7 +16,18 @@ publish = false
 
 [lib]
 
+
 [dependencies]
+
+num-complex = "0.4"
+num-bigint = "0.4"
+num-traits = "0.2"
+
+rand = "0.8"
+sha2 = "0.10"
+
+
+
 # itertools = { workspace = true}
 # hashbrown={workspace =true}
 # num-integer={workspace = true}

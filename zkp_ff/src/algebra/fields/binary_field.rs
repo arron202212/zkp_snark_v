@@ -1,40 +1,108 @@
+use crate::algebra::field_utils::bigint::BigInt;
 
-//  Declaration of common API for all finite fields in the binary/ directory.
+/// Binary finite field common API.
+///
+/// Represents finite fields GF(2^n).
+///
+/// This trait documents the common interface for binary fields.
+/// It does not require a particular internal representation.
+pub trait BinaryField:
+    Clone
+    + Sized
+    + PartialEq
+{
+    /// Binary field modulus.
+    ///
+    /// Usually represented as an irreducible polynomial.
+    const MODULUS: u64;
 
-//  Currently NOT used by the fields in this library. This pub struct is not actually
-//  the parent pub struct of any field. All APIs are enforced through tests instead.
+    /// Number of bits in the field representation.
+    const NUM_BITS: usize;
 
-//  The reason for this is to ensure high performance of all fields. This class
-//  exists as documentation for common API between fields.
+    /// Multiplicative generator.
+    fn multiplicative_generator() -> Self;
 
-//  Includes fields F_{2^n} for some selected values of n. All of the binary
-//  entension fields must implement all functions declared in this class.
+    /// Characteristic of the field.
+    fn field_char<const N: usize>() -> BigInt<N> {
+        BigInt::<N>::from(2u64)
+    }
 
-use crate::algebra::field_utils::bigint;
+    /// Addition.
+    fn add_assign(&mut self, other: &Self);
 
+    /// Subtraction.
+    fn sub_assign(&mut self, other: &Self);
 
+    /// Multiplication.
+    fn mul_assign(&mut self, other: &Self);
 
+    /// Exponentiation.
+    fn pow_assign(&mut self, exp: u64);
 
-//  The type parameter T is intended to be set to the child class
-// when this pub struct is extended. For example,
-// pub struct gf32 : public BinaryField<gf32> ...
+    /// Square in place.
+    fn square(&mut self);
 
+    /// Inverse in place.
+    fn invert(&mut self);
 
-pub trait BinaryField<T>:Fields<T>{
+    /// Additive inverse.
+    fn negate(&self) -> Self;
 
-    //Functions unique to binary fields
+    /// Square root.
+    fn sqrt(&self) -> Self;
 
-    // TODO: add documentation about how moduli are represented.
-     const modulus_:u64,
-     const num_bits:u64,
+    /// Squared value.
+    fn squared(&self) -> Self {
+        let mut result = self.clone();
+        result.square();
+        result
+    }
 
-   //generator of gf2^n
-     fn multiplicative_generator()->T;
+    /// Multiplicative inverse.
+    fn inverse(&self) -> Self {
+        let mut result = self.clone();
+        result.invert();
+        result
+    }
 
-   //If extension field, returns the base field's characteristic.
-    
-     fn field_char<const N:usize>() {  bigint::<N>::new(2) }
+    /// Zero element.
+    fn zero() -> Self;
 
-    //Functions common to all finite fields
+    /// One element.
+    fn one() -> Self;
 
+    /// Random element.
+    fn random_element() -> Self;
+
+    /// Number of bits.
+    fn ceil_size_in_bits() -> usize {
+        Self::NUM_BITS
+    }
+
+    /// Number of bits.
+    fn floor_size_in_bits() -> usize {
+        Self::NUM_BITS
+    }
+
+    /// Extension degree.
+    fn extension_degree() -> usize;
+
+    /// Convert to little-endian u64 words.
+    fn to_words(&self) -> Vec<u64>;
+
+    /// Restore from little-endian u64 words.
+    fn from_words(words: &[u64]) -> bool;
+
+    /// Randomize current element.
+    fn randomize(&mut self);
+
+    /// Clear current element.
+    fn clear(&mut self);
+
+    /// Check whether element is zero.
+    fn is_zero(&self) -> bool;
+
+    /// Print field element.
+    fn print(&self);
+}
 

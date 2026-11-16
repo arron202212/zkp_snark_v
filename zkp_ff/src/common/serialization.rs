@@ -1,107 +1,165 @@
-#![allow(dead_code)]
-//#![allow(non_snake_case)]
-//#![allow(non_upper_case_globals)]
-//#![allow(nonstandard_style)]
-//#![allow(unused_imports)]
-#![allow(unused_mut)]
-#![allow(unused_braces)]
-#![allow(warnings, unused)]
+use std::io::{self, Read, Write};
 
-// Declaration of serialization routines and constants.
-use std::io::{self, Read};
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SerializationMode {
+    Text,
+    Binary,
+}
 
-// /*
-//  * @todo
-//  * The serialization is fragile. Shoud be rewritten using a standard, portable-format
-//  * library like boost::serialize.
-//  *
-//  * However, for now the following conventions are used within the code.
-//  *
-//  * All algebraic objects support either binary or decimal output using
-//  * the standard C++ stream operators (operator<<, operator>>).
-//  *
-//  * The binary mode is activated by defining a BINARY_OUTPUT
-//  * preprocessor macro (e.g. g++ -DBINARY_OUTPUT ...).
-//  *
-//  * Binary output assumes that the stream is to be binary read at its
-//  * current position so any white space should be consumed beforehand.
-//  *
-//  * Consecutive algebraic objects are separated by OUTPUT_NEWLINE and
-//  * within themselves (e.g. X and Y coordinates for field elements) with
-//  * OUTPUT_SEPARATOR (as defined below).
-//  *
-//  * Therefore to dump two integers, two Fp elements and another integer
-//  * one would:
-//  *
-//  * out << 3 << "\n";
-//  * out << 4 << "\n";
-//  * out << FieldT(56) << OUTPUT_NEWLINE;
-//  * out << FieldT(78) << OUTPUT_NEWLINE;
-//  * out << 9 << "\n";
-//  *
-//  * Then reading back it its reader's responsibility (!) to consume "\n"
-//  * after 4, but Fp::operator<< will correctly consume OUTPUT_NEWLINE.
-//  *
-//  * The reader should also consume "\n" after 9, so that another field
-//  * element can be properly chained. This is especially important for
-//  * binary output.
-//  *
-//  * The binary serialization of algebraic objects is currently *not*
-//  * portable between machines of different word sizes.
-//  */
-cfg_if::cfg_if! {
- if #[cfg(feature="BINARY_OUTPUT")]
+/// 单个元素的序列化接口。
+///
+/// write_payload / read_payload 只负责元素自身的内容，
+/// 容器负责元素之间的分隔符。
+pub trait Serialize: Sized {
+    fn write_payload<W: Write>(
+        &self,
+        writer: &mut W,
+        mode: SerializationMode,
+    ) -> io::Result<()>;
+
+    fn read_payload<R: Read>(
+        reader: &mut R,
+        mode: SerializationMode,
+    ) -> io::Result<Self>;
+}
+
+
+fn read_token<R: Read>(reader: &mut R) -> io::Result<String> {
+    let mut token = Vec::new();
+    let mut byte = [0u8; 1];
+
+    loop {
+        match reader.read(&mut byte)? {
+            0 => break,
+            _ if byte[0].is_ascii_whitespace() => {
+                if token.is_empty() {
+                    continue;
+                }
+                break;
+            }
+            _ => token.push(byte[0]),
+        }
+    }
+
+    if token.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "unexpected end of input",
+        ));
+    }
+
+    String::from_utf8(token).map_err(|e| {
+        io::Error::new(io::ErrorKind::InvalidData, e)
+    })
+}
+
+fn write_text<T: std::fmt::Display, W: Write>(
+    writer: &mut W,
+    value: T,
+) -> io::Result<()> {
+    write!(writer, "{}", value)
+}
+
+fn parse_text<T: std::str::FromStr, R: Read>(
+    reader: &mut R,
+) -> io::Result<T>
+where
+    T::Err: std::fmt::Display,
 {
-pub const OUTPUT_NEWLINE:&str= "";
-pub const OUTPUT_SEPARATOR:&str= "";}
-else
-{
-pub const OUTPUT_NEWLINE:&str= "\n";
-pub const OUTPUT_SEPARATOR:&str= " ";
-}
+    let token = read_token(reader)?;
+
+    token.parse::<T>().map_err(|e| {
+        io::Error::new(io::ErrorKind::InvalidData, e.to_string())
+    })
 }
 
-use crate::common::utils;
-use std::io::BufRead;
-use std::io::BufWriter;
-use std::io::Write;
 
-// using std::usize;
+impl Serialize for u64 {
+    fn write_payload<W: Write>(
+        &self,
+        writer: &mut W,
+        mode: SerializationMode,
+    ) -> io::Result<()> {
+        match mode {
+            SerializationMode::Text => {
+                write_text(writer, *self)
+            }
+            SerializationMode::Binary => {
+                writer.write_all(&self.to_le_bytes())
+            }
+        }
+    }
 
-#[inline]
-pub fn consume_newline<R: Read>(ins: &mut R) -> io::Result<()> {
-    // let mut c;
-    // ins.read(&c, 1);
+    fn read_payload<R: Read>(
+        reader: &mut R,
+        mode: SerializationMode,
+    ) -> io::Result<Self> {
+        match mode {
+            SerializationMode::Text => parse_text(reader),
+            SerializationMode::Binary => {
+                let mut bytes = [0u8; 8];
+                reader.read_exact(&mut bytes)?;
+                Ok(u64::from_le_bytes(bytes))
+            }
+        }
+    }
+}
+
+pub fn output_bool<W: Write>(
+    writer: &mut W,
+    value: bool,
+) -> io::Result<()> {
+    writeln!(writer, "{}", if value { 1 } else { 0 })
+}
+
+pub fn input_bool<R: Read>(
+    reader: &mut R,
+) -> io::Result<bool> {
+    let value: u64 = parse_text(reader)?;
+
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "boolean value must be 0 or 1",
+        )),
+    }
+}
+
+pub fn output_bool_vector<W: Write>(
+    writer: &mut W,
+    values: &[bool],
+) -> io::Result<()> {
+    writeln!(writer, "{}", values.len())?;
+
+    for &value in values {
+        output_bool(writer, value)?;
+    }
+
     Ok(())
 }
 
-#[inline]
-pub fn consume_output_newline<R: Read>(ins: &mut R) -> io::Result<()> {
-    Ok(())
-}
+pub fn input_bool_vector<R: Read>(
+    reader: &mut R,
+) -> io::Result<Vec<bool>> {
+    let len: usize = parse_text(reader)?;
 
-#[inline]
-pub fn consume_output_separator<R: Read>(ins: &mut R) -> io::Result<()> {
-    Ok(())
-}
-#[inline]
-pub fn read_line_as_usize<R: Read>(ins: &mut R) -> io::Result<usize> {
-    Ok(0)
-}
-#[inline]
-pub fn output_bool<W: ?Sized + Write>(out: &mut BufWriter<W>, b: bool) {
-    write!(out, "{}\n", b as u8);
-}
+    // 防止异常输入导致不合理的内存分配。
+    const MAX_ELEMENTS: usize = 10_000_000;
 
-#[inline]
-pub fn input_bool(ins: &impl BufRead, b: bool) {}
+    if len > MAX_ELEMENTS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "boolean vector is too large",
+        ));
+    }
 
-#[inline]
-pub fn output_bool_vector<W: ?Sized + Write>(out: &BufWriter<W>, v: &Vec<bool>) {}
+    let mut values = Vec::with_capacity(len);
 
-#[inline]
-pub fn input_bool_vector(ins: &impl BufRead, v: &Vec<bool>) {}
+    for _ in 0..len {
+        values.push(input_bool(reader)?);
+    }
 
-pub fn reserialize<T: Clone>(obj: &T) -> T {
-    obj.clone()
+    Ok(values)
 }

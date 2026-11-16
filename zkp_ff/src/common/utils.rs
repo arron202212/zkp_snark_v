@@ -1,172 +1,497 @@
-#![allow(dead_code)]
-#![allow(non_snake_case)]
-#![allow(non_upper_case_globals)]
-#![allow(nonstandard_style)]
-#![allow(unused_imports)]
-#![allow(unused_mut)]
-#![allow(unused_braces)]
-#![allow(warnings, unused)]
 
-// Declaration of miscellaneous math, serialization, and other common utility
-// functions.
-use crate::PpConfig;
+use std::fmt::Display;
+use std::io::{self, BufRead, Write};
 
-pub type bit_vector = Vec<bool>;
+/// Equivalent to libff::bit_vector.
+pub type BitVector = Vec<bool>;
 
-use std::fmt::Write;
-
-pub fn FMT(s: &str, c: &str) {}
-
-pub fn print_vector<T: std::fmt::Display>(vec: &Vec<T>) {
-    print!("{{ ");
-    for elem in vec {
-        print!("{elem} ");
+/// Round n up to the next power of two.
+///
+/// Returns None for zero or overflow.
+pub fn get_power_of_two(n: usize) -> Option<usize> {
+    if n == 0 {
+        return None;
     }
-    print!("}}\n");
+
+    n.checked_next_power_of_two()
 }
 
-//  note that utils has a templatized part (utils.tcc) and non-templatized part (utils.cpp)
-
-// Implementation of misc math and serialization utility functions.
-
-//  * Round n to the next power of two.
-//  * If n is a power of two, return n
-
-pub fn get_power_of_two(mut n: usize) -> usize {
-    n -= 1;
-    n |= n >> 1;
-    n |= n >> 2;
-    n |= n >> 4;
-    n |= n >> 8;
-    n |= n >> 16;
-    n |= n >> 32;
-    n += 1;
-
-    return n;
+/// Round n up to the next power of two.
+pub fn round_to_next_power_of_2(n: usize) -> Option<usize> {
+    get_power_of_two(n)
 }
 
-//If n is a power of 2, returns n
-pub fn round_to_next_power_of_2(n: usize) -> usize {
-    1usize << log2(n)
-}
-
+/// Check whether n is a power of two.
 pub fn is_power_of_2(n: usize) -> bool {
-    return (n != 0) && ((n & (n - 1)) == 0);
+    n != 0 && (n & (n - 1)) == 0
 }
 
-//  returns ceil(log2(n)), so 1u64<<log2(n) is the smallest power of 2,
-// that is not less than n.
-pub fn log2(mut n: usize) -> usize {
-    let mut r = if n & (n - 1) == 0 { 0 } else { 1 }; // add 1 if n is not power of 2
-
-    while n > 1 {
-        n >>= 1;
-        r += 1;
+/// Return ceil(log2(n)).
+///
+/// Examples:
+/// n = 1 -> 0
+/// n = 2 -> 1
+/// n = 3 -> 2
+/// n = 8 -> 3
+/// n = 9 -> 4
+///
+/// Returns None for zero.
+pub fn log2(n: usize) -> Option<usize> {
+    if n == 0 {
+        return None;
     }
 
-    return r;
+    Some(usize::BITS as usize - (n - 1).leading_zeros() as usize - 1)
 }
 
-pub fn to_twos_complement(i: i64, w: usize) -> usize {
-    assert!(i >= -(1i64 << (w - 1)));
-    assert!(i < (1i64 << (w - 1)));
-    (if i >= 0 { i } else { i + (1i64 << w) }) as _
+/// Calculate 2^k.
+///
+/// Returns None if the result overflows usize.
+pub fn exp2(k: usize) -> Option<usize> {
+    if k >= usize::BITS as usize {
+        return None;
+    }
+
+    Some(1usize << k)
 }
 
-pub fn from_twos_complement(i: usize, w: usize) -> usize {
-    assert!(i < (1usize << w));
-    if i < (1usize << (w - 1)) {
-        i
+/// Convert signed integer to w-bit two's complement.
+///
+/// Requires:
+/// 1 <= w <= usize::BITS
+/// -2^(w-1) <= i < 2^(w-1)
+pub fn to_twos_complement(i: i64, w: usize) -> Option<usize> {
+    if w == 0 || w > usize::BITS as usize {
+        return None;
+    }
+
+    let half = 1i128 << (w - 1);
+    let value = i as i128;
+
+    if value < -half || value >= half {
+        return None;
+    }
+
+    let modulus = 1i128 << w;
+
+    Some(if value >= 0 {
+        value as usize
     } else {
-        i - (1usize << w)
-    }
+        (value + modulus) as usize
+    })
 }
 
+/// Convert w-bit two's complement to signed integer.
+///
+/// Requires:
+/// 1 <= w <= usize::BITS
+/// i < 2^w
+pub fn from_twos_complement(i: usize, w: usize) -> Option<i64> {
+    if w == 0 || w > usize::BITS as usize {
+        return None;
+    }
+
+    let modulus = 1u128 << w;
+    let value = i as u128;
+
+    if value >= modulus {
+        return None;
+    }
+
+    let sign_bit = 1u128 << (w - 1);
+
+    let result = if value < sign_bit {
+        value as i128
+    } else {
+        value as i128 - modulus as i128
+    };
+
+    i64::try_from(result).ok()
+}
+
+/// Reverse the lowest l bits of n.
+///
+/// Bits above l are ignored.
 pub fn bitreverse(mut n: usize, l: usize) -> usize {
-    let mut r = 0;
-    for k in 0..l {
-        r = (r << 1) | (n & 1);
+    let mut result = 0usize;
+
+    for _ in 0..l.min(usize::BITS as usize) {
+        result = (result << 1) | (n & 1);
         n >>= 1;
     }
-    return r;
+
+    result
 }
 
-pub fn int_list_to_bits(l: &[usize], wordsize: usize) -> bit_vector {
-    let mut res = Vec::with_capacity(wordsize * l.len());
-    for i in 0..l.len() {
+/// Convert a list of integers into a bit vector.
+///
+/// Each integer contributes exactly wordsize bits.
+/// Bits are stored in most-significant-bit-first order,
+/// matching libff::int_list_to_bits.
+pub fn int_list_to_bits(
+    values: &[u64],
+    wordsize: usize,
+) -> Option<BitVector> {
+    if wordsize > 64 {
+        return None;
+    }
+
+    let capacity = values.len().checked_mul(wordsize)?;
+    let mut result = Vec::with_capacity(capacity);
+
+    for &value in values {
         for j in 0..wordsize {
-            res[i * wordsize + j] = (l[i] & (1usize << (wordsize - 1 - j))) != 0;
+            let bit = (value >> (wordsize - 1 - j)) & 1;
+            result.push(bit != 0);
         }
     }
-    res
+
+    Some(result)
 }
 
-pub fn div_ceil(x: usize, y: usize) -> eyre::Result<usize> {
+/// Ceiling division.
+///
+/// Returns an error when y == 0 or the result overflows i64.
+pub fn div_ceil(x: i64, y: i64) -> Result<i64, &'static str> {
     if y == 0 {
-        eyre::bail!("div_ceil: division by zero, second argument must be non-zero");
+        return Err("division by zero");
     }
-    return Ok((x + (y - 1)) / y);
-}
 
-pub fn is_little_endian() -> bool {
-    if cfg!(target_endian = "little") {
-        true
+    let x = x as i128;
+    let y = y as i128;
+
+    let quotient = x / y;
+    let remainder = x % y;
+
+    let result = if remainder != 0 && (x > 0) == (y > 0) {
+        quotient + 1
     } else {
-        false
-    }
-    // let  a:u64 = 0x12345678;
-    // a.to_le()==a.to_ne()
+        quotient
+    };
+
+    i64::try_from(result)
+        .map_err(|_| "division result overflow")
 }
 
-pub fn serialize_bit_vector(out: &mut String, v: &bit_vector) {
-    write!(out, "{}\n", v.len());
-    for b in v {
-        write!(out, "{}\n", b);
+/// Check whether the current platform is little-endian.
+pub fn is_little_endian() -> bool {
+    cfg!(target_endian = "little")
+}
+
+/// Add a prefix to a formatted string.
+pub fn format_prefix(
+    prefix: &str,
+    message: impl Display,
+) -> String {
+    format!("{}{}", prefix, message)
+}
+
+/// Print a vector in the form:
+/// { elem0 elem1 elem2 }
+pub fn print_vector<T: Display>(vec: &[T]) {
+    print!("{{ ");
+
+    for elem in vec {
+        print!("{} ", elem);
+    }
+
+    println!("}}");
+}
+
+/// Serialize a bit vector.
+///
+/// Format:
+/// size
+/// bit0
+/// bit1
+/// ...
+pub fn serialize_bit_vector<W: Write>(
+    out: &mut W,
+    bits: &[bool],
+) -> io::Result<()> {
+    writeln!(out, "{}", bits.len())?;
+
+    for &bit in bits {
+        writeln!(out, "{}", if bit { 1 } else { 0 })?;
+    }
+
+    Ok(())
+}
+
+/// Deserialize a bit vector.
+///
+/// Accepts the same whitespace-separated format
+/// generated by serialize_bit_vector.
+pub fn deserialize_bit_vector<R: BufRead>(
+    input: &mut R,
+) -> io::Result<BitVector> {
+    let mut contents = String::new();
+    input.read_to_string(&mut contents)?;
+
+    let mut tokens = contents.split_whitespace();
+
+    let size: usize = tokens
+        .next()
+        .ok_or_else(|| io::Error::new(
+            io::ErrorKind::InvalidData,
+            "missing bit vector size",
+        ))?
+        .parse()
+        .map_err(|_| io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid bit vector size",
+        ))?;
+
+    let mut result = Vec::with_capacity(size);
+
+    for _ in 0..size {
+        let bit = tokens
+            .next()
+            .ok_or_else(|| io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "incomplete bit vector",
+            ))?;
+
+        match bit {
+            "0" => result.push(false),
+            "1" => result.push(true),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid bit value",
+                ));
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+
+/// Common random finite-field element interface.
+pub trait RandomFieldElement: PartialEq + Sized {
+    fn random_element() -> Self;
+
+    fn is_zero(&self) -> bool;
+
+    fn one() -> Self;
+}
+
+/// Common curve size interface.
+pub trait CurveSizeInBits {
+    fn size_in_bits() -> usize;
+}
+
+/// Calculate total bit size of a vector of curve elements.
+///
+/// Equivalent to:
+///     v.size() * CurveT::size_in_bits()
+pub fn curve_size_in_bits<T>(v: &[T]) -> usize
+where
+    T: CurveSizeInBits,
+{
+    v.len() * T::size_in_bits()
+}
+
+/// Generate a random field element excluding zero and one.
+pub fn random_element_non_zero_one<T>() -> T
+where
+    T: RandomFieldElement,
+{
+    loop {
+        let x = T::random_element();
+
+        if !x.is_zero() && x != T::one() {
+            return x;
+        }
     }
 }
 
-pub fn deserialize_bit_vector(ins: &String, v: &mut bit_vector) {
-    let mut buf_read = ins.split_ascii_whitespace();
-    let size = buf_read.next().unwrap().parse::<usize>().unwrap();
-    v.resize(size, false);
-    for i in 0..size {
-        v[i] = buf_read.next().unwrap().parse::<bool>().unwrap();
+/// Generate a random non-zero field element.
+pub fn random_element_non_zero<T>() -> T
+where
+    T: RandomFieldElement,
+{
+    loop {
+        let x = T::random_element();
+
+        if !x.is_zero() {
+            return x;
+        }
     }
 }
 
-pub fn size_in_bits<CurveT: PpConfig>(v: &Vec<CurveT>) -> usize {
-    v.len() * CurveT::size_in_bits()
-}
-//  * Returns a random element of T that is not zero or one.
-//  * T can be a field or elliptic curve group.
-//  * Used for testing to generate a test example that doesn't error.
+/// Generate a random field element excluding a specified value.
+pub fn random_element_exclude<T>(y: T) -> T
+where
+    T: RandomFieldElement,
+{
+    loop {
+        let x = T::random_element();
 
-pub fn random_element_non_zero_one<T: PpConfig>() -> T {
-    let mut x: T = T::random_element();
-    while x.is_zero() || x == T::one() {
-        x = T::random_element();
+        if x != y {
+            return x;
+        }
     }
-    return x;
 }
-//  * Returns a random element of T that is not zero.
-//  * T can be a field or elliptic curve group.
-//  * Used for testing to generate a test example that doesn't error.
 
-pub fn random_element_non_zero<T: PpConfig>() -> T {
-    let mut x: T = T::random_element();
-    while x.is_zero() {
-        x = T::random_element();
-    }
-    return x;
-}
-//  * Returns a random element of T that is not equal to y.
-//  * T can be a field or elliptic curve group.
-//  * Used for testing to generate a test example that doesn't error.
 
-pub fn random_element_exclude<T: PpConfig>(y: T) -> T {
-    let mut x: T = T::random_element();
-    while x == y {
-        x = T::random_element();
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_power_of_two() {
+        assert_eq!(get_power_of_two(1), Some(1));
+        assert_eq!(get_power_of_two(2), Some(2));
+        assert_eq!(get_power_of_two(3), Some(4));
+        assert_eq!(get_power_of_two(8), Some(8));
+        assert_eq!(get_power_of_two(9), Some(16));
+
+        assert_eq!(get_power_of_two(0), None);
     }
-    return x;
+
+    #[test]
+    fn test_is_power_of_two() {
+        assert!(is_power_of_2(1));
+        assert!(is_power_of_2(2));
+        assert!(is_power_of_2(4));
+        assert!(is_power_of_2(1024));
+
+        assert!(!is_power_of_2(0));
+        assert!(!is_power_of_2(3));
+        assert!(!is_power_of_2(9));
+    }
+
+    #[test]
+    fn test_log2() {
+        assert_eq!(log2(1), Some(0));
+        assert_eq!(log2(2), Some(1));
+        assert_eq!(log2(3), Some(2));
+        assert_eq!(log2(4), Some(2));
+        assert_eq!(log2(8), Some(3));
+        assert_eq!(log2(9), Some(4));
+
+        assert_eq!(log2(0), None);
+    }
+
+    #[test]
+    fn test_exp2() {
+        assert_eq!(exp2(0), Some(1));
+        assert_eq!(exp2(1), Some(2));
+        assert_eq!(exp2(4), Some(16));
+
+        assert_eq!(exp2(usize::BITS as usize), None);
+    }
+
+    #[test]
+    fn test_twos_complement() {
+        assert_eq!(to_twos_complement(0, 8), Some(0));
+        assert_eq!(to_twos_complement(127, 8), Some(127));
+        assert_eq!(to_twos_complement(-1, 8), Some(255));
+        assert_eq!(to_twos_complement(-128, 8), Some(128));
+
+        assert_eq!(from_twos_complement(0, 8), Some(0));
+        assert_eq!(from_twos_complement(127, 8), Some(127));
+        assert_eq!(from_twos_complement(255, 8), Some(-1));
+        assert_eq!(from_twos_complement(128, 8), Some(-128));
+
+        assert_eq!(to_twos_complement(128, 8), None);
+        assert_eq!(to_twos_complement(-129, 8), None);
+    }
+
+    #[test]
+    fn test_bitreverse() {
+        assert_eq!(bitreverse(0b110, 3), 0b011);
+        assert_eq!(bitreverse(0b101, 3), 0b101);
+        assert_eq!(bitreverse(0b001, 3), 0b100);
+        assert_eq!(bitreverse(0b1011, 4), 0b1101);
+    }
+
+    #[test]
+    fn test_int_list_to_bits() {
+        let bits = int_list_to_bits(&[5, 10], 4).unwrap();
+
+        assert_eq!(
+            bits,
+            vec![
+                false, true, false, true,
+                true, false, true, false,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_div_ceil() {
+        assert_eq!(div_ceil(10, 3), Ok(4));
+        assert_eq!(div_ceil(9, 3), Ok(3));
+        assert_eq!(div_ceil(-10, 3), Ok(-3));
+        assert_eq!(div_ceil(10, -3), Ok(-3));
+        assert_eq!(div_ceil(-10, -3), Ok(4));
+
+        assert!(div_ceil(10, 0).is_err());
+    }
+
+    #[test]
+    fn test_bit_vector_serialization() {
+        let original = vec![
+            true,
+            false,
+            true,
+            true,
+            false,
+        ];
+
+        let mut buffer = Vec::new();
+
+        serialize_bit_vector(&mut buffer, &original).unwrap();
+
+        let mut input = std::io::Cursor::new(buffer);
+
+        let restored = deserialize_bit_vector(&mut input).unwrap();
+
+        assert_eq!(original, restored);
+    }
+
+    #[test]
+    fn test_little_endian() {
+        assert_eq!(
+            is_little_endian(),
+            cfg!(target_endian = "little")
+        );
+    }
+
+
+#[test]
+fn test_random_element_non_zero() {
+    for _ in 0..100 {
+        let x = random_element_non_zero::<Fp>();
+
+        assert!(!x.is_zero());
+    }
 }
+
+#[test]
+fn test_random_element_non_zero_one() {
+    for _ in 0..100 {
+        let x = random_element_non_zero_one::<Fp>();
+
+        assert!(!x.is_zero());
+        assert_ne!(x, Fp::one());
+    }
+}
+
+#[test]
+fn test_random_element_exclude() {
+    let excluded = Fp::one();
+
+    for _ in 0..100 {
+        let x = random_element_exclude(excluded);
+
+        assert_ne!(x, excluded);
+    }
+}
+}
+
+

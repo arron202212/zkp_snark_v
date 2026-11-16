@@ -849,8 +849,123 @@ fn mul_48_by_4(a: &[u64; 48], b: &[u64; 4]) -> [u64; 48] {
 mod tests {
     use super::*;
 
-    use crate::algebra::fields::prime_base::fp_montgomery::FieldParams;
+    // use crate::algebra::fields::prime_base::fp_montgomery::FieldParams;
 
+    use crate::algebra::fields::prime_base::fp::Fp;
+    use crate::algebra::fields::prime_base::fp_montgomery::FieldParams;
+    use crate::algebra::fields::prime_extension::fp2::{Fp2, Fp2Params};
+    use crate::algebra::fields::prime_extension::fp6_3over2::{Fp6, Fp6Params};
+    use crate::algebra::fields::prime_extension::fp12_2over3over2::Fp12Params;
+
+    pub fn bn254_fp12_params() -> Fp12Params {
+        let fp_params = FieldParams::new([
+            0x3c20_8c16_d87c_fd47,
+            0x9781_6a91_6871_ca8d,
+            0xb850_45b6_8181_585d,
+            0x3064_4e72_e131_a029,
+        ]);
+
+        // Fp2: u^2 = -1
+        let one = Fp::one(fp_params.clone());
+        let minus_one = one.negate();
+
+        let fp2_params = Fp2Params::new(
+            fp_params.clone(),
+            minus_one.clone(),
+            [one.clone(), minus_one],
+        );
+
+        // xi = 9 + u
+        let xi = Fp2::new(
+            Fp::from_u64(9, fp_params.clone()),
+            Fp::one(fp_params.clone()),
+            fp2_params.clone(),
+        );
+
+        // Exponents are little-endian 64-bit limbs.
+        let exp_q_minus_1_div_3 = [
+            0x6960_2eb2_4829_a9c2,
+            0xdd2b_2385_cd7b_4384,
+            0xe81a_c1e7_8080_72c9,
+            0x1021_6f7b_a065_e00d,
+        ];
+
+        let exp_2_q_minus_1_div_3 = [
+            0xd2c0_5d64_9053_5384,
+            0xba56_470b_9af6_8708,
+            0xd035_83cf_0100_e593,
+            0x2042_def7_40cb_c01b,
+        ];
+
+        let exp_q_minus_1_div_2 = [
+            0x9e10_460b_6c3e_7ea3,
+            0xcbc0_b548_b438_e546,
+            0xdc28_22db_40c0_ac2e,
+            0x1832_2739_7098_d014,
+        ];
+
+        // Fp6 Frobenius coefficients.
+        let c1_first = xi.pow(&exp_q_minus_1_div_3);
+        let c2_first = xi.pow(&exp_2_q_minus_1_div_3);
+
+        let mut c1 = vec![Fp2::one(fp2_params.clone())];
+        let mut c2 = vec![Fp2::one(fp2_params.clone())];
+
+        c1.push(c1_first);
+        c2.push(c2_first);
+
+        for k in 1..5 {
+            let next_c1 = c1[k].frobenius_map(1).mul(&c1[1]);
+
+            let next_c2 = c2[k].frobenius_map(1).mul(&c2[1]);
+
+            c1.push(next_c1);
+            c2.push(next_c2);
+        }
+
+        let fp6_params = Fp6Params {
+            fp2_params: fp2_params.clone(),
+            non_residue: xi,
+            frobenius_coeffs_c1: c1.try_into().expect("Fp6 c1 length"),
+            frobenius_coeffs_c2: c2.try_into().expect("Fp6 c2 length"),
+        };
+
+        // Fp6 basis element w = (0, 1, 0).
+        let zero2 = Fp2::zero(fp2_params.clone());
+        let one2 = Fp2::one(fp2_params.clone());
+
+        let w = Fp6::new(
+            zero2.clone(),
+            one2.clone(),
+            zero2.clone(),
+            fp6_params.clone(),
+        );
+
+        // Fp12 Frobenius coefficients.
+        let d1 = w.pow(&exp_q_minus_1_div_2);
+
+        let mut d = vec![Fp6::new(
+            one2.clone(),
+            zero2.clone(),
+            zero2.clone(),
+            fp6_params.clone(),
+        )];
+
+        d.push(d1);
+
+        for k in 1..11 {
+            let next = d[k].frobenius_map(1).mul(&d[1]);
+
+            d.push(next);
+        }
+
+        Fp12Params {
+            fp6_params,
+            frobenius_coeffs_c1: d
+                .try_into()
+                .unwrap_or_else(|_| panic!("Fp12 coefficient length")),
+        }
+    }
     /// Test tower:
     ///
     /// Fp  = F7
@@ -1028,5 +1143,20 @@ mod tests {
         println!("Fp6 size: {}", std::mem::size_of::<Fp6>());
         println!("Fp12Params size: {}", std::mem::size_of::<Fp12Params>());
         println!("Fp12 size: {}", std::mem::size_of::<Fp12>());
+    }
+
+    #[test]
+    fn test_bn254_fp6_frobenius_cycle() {
+        let params = bn254_fp12_params();
+        let fp6_params = params.fp6_params;
+
+        let x = Fp6::new(
+            Fp2::from_u64(3, fp6_params.fp2_params.clone()),
+            Fp2::from_u64(5, fp6_params.fp2_params.clone()),
+            Fp2::from_u64(7, fp6_params.fp2_params.clone()),
+            fp6_params,
+        );
+
+        assert!(x.frobenius_map(6).equals(&x));
     }
 }

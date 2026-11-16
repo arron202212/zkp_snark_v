@@ -1,33 +1,40 @@
 use crate::algebra::fields::prime_base::fp::Fp;
-use crate::algebra::fields::prime_base::fp_montgomery::{FieldParams, Limbs};
-
-// use std::cmp::Ordering;
+use crate::algebra::fields::prime_base::fp_montgomery::FieldParams;
 
 /// Fp2 parameters.
 ///
 /// Fp2 = Fp[u] / (u^2 - non_residue)
 ///
 /// An element is represented as c0 + c1 * u.
+///
+/// N is the number of u64 limbs in the base field.
+///
+/// The default N = 4 preserves compatibility with existing BN254 code.
 #[derive(Clone, Debug)]
-pub struct Fp2Params {
+pub struct Fp2Params<const N: usize = 4> {
     /// Base-field parameters.
-    pub fp_params: FieldParams,
+    pub fp_params: FieldParams<N>,
 
     /// u^2 = non_residue.
-    pub non_residue: Fp,
+    pub non_residue: Fp<N>,
 
     /// Frobenius coefficients for the c1 component.
     ///
     /// For the quadratic extension:
-    ///   frobenius_coeffs_c1[0] = 1
-    ///   frobenius_coeffs_c1[1] = u^p / u
+    ///
+    /// frobenius_coeffs_c1[0] = 1
+    /// frobenius_coeffs_c1[1] = u^p / u
     ///
     /// The index is reduced modulo 2.
-    pub frobenius_coeffs_c1: [Fp; 2],
+    pub frobenius_coeffs_c1: [Fp<N>; 2],
 }
 
-impl Fp2Params {
-    pub fn new(fp_params: FieldParams, non_residue: Fp, frobenius_coeffs_c1: [Fp; 2]) -> Self {
+impl<const N: usize> Fp2Params<N> {
+    pub fn new(
+        fp_params: FieldParams<N>,
+        non_residue: Fp<N>,
+        frobenius_coeffs_c1: [Fp<N>; 2],
+    ) -> Self {
         assert_eq!(
             fp_params.modulus, non_residue.params.modulus,
             "non_residue belongs to a different base field"
@@ -47,27 +54,27 @@ impl Fp2Params {
         }
     }
 
-    pub fn zero(&self) -> Fp2 {
+    pub fn zero(&self) -> Fp2<N> {
         Fp2 {
-            c0: Fp::zero(self.fp_params.clone()),
-            c1: Fp::zero(self.fp_params.clone()),
+            c0: Fp::<N>::zero(self.fp_params.clone()),
+            c1: Fp::<N>::zero(self.fp_params.clone()),
             params: self.clone(),
         }
     }
 
-    pub fn one(&self) -> Fp2 {
+    pub fn one(&self) -> Fp2<N> {
         Fp2 {
-            c0: Fp::one(self.fp_params.clone()),
-            c1: Fp::zero(self.fp_params.clone()),
+            c0: Fp::<N>::one(self.fp_params.clone()),
+            c1: Fp::<N>::zero(self.fp_params.clone()),
             params: self.clone(),
         }
     }
 
     /// Construct a base-field element embedded into Fp2.
-    pub fn from_u64(&self, value: u64) -> Fp2 {
+    pub fn from_u64(&self, value: u64) -> Fp2<N> {
         Fp2 {
-            c0: Fp::from_u64(value, self.fp_params.clone()),
-            c1: Fp::zero(self.fp_params.clone()),
+            c0: Fp::<N>::from_u64(value, self.fp_params.clone()),
+            c1: Fp::<N>::zero(self.fp_params.clone()),
             params: self.clone(),
         }
     }
@@ -75,23 +82,19 @@ impl Fp2Params {
 
 /// Represents:
 ///
-/// ```text
 /// c0 + c1 * u
-/// ```
 ///
 /// where:
 ///
-/// ```text
 /// u^2 = params.non_residue
-/// ```
 #[derive(Clone, Debug)]
-pub struct Fp2 {
-    pub c0: Fp,
-    pub c1: Fp,
-    pub params: Fp2Params,
+pub struct Fp2<const N: usize = 4> {
+    pub c0: Fp<N>,
+    pub c1: Fp<N>,
+    pub params: Fp2Params<N>,
 }
 
-impl PartialEq for Fp2 {
+impl<const N: usize> PartialEq for Fp2<N> {
     fn eq(&self, other: &Self) -> bool {
         self.c0 == other.c0
             && self.c1 == other.c1
@@ -101,10 +104,10 @@ impl PartialEq for Fp2 {
     }
 }
 
-impl Eq for Fp2 {}
+impl<const N: usize> Eq for Fp2<N> {}
 
-impl Fp2 {
-    pub fn new(c0: Fp, c1: Fp, params: Fp2Params) -> Self {
+impl<const N: usize> Fp2<N> {
+    pub fn new(c0: Fp<N>, c1: Fp<N>, params: Fp2Params<N>) -> Self {
         assert_eq!(
             c0.params.modulus, params.fp_params.modulus,
             "c0 belongs to a different base field"
@@ -118,15 +121,15 @@ impl Fp2 {
         Self { c0, c1, params }
     }
 
-    pub fn zero(params: Fp2Params) -> Self {
+    pub fn zero(params: Fp2Params<N>) -> Self {
         params.zero()
     }
 
-    pub fn one(params: Fp2Params) -> Self {
+    pub fn one(params: Fp2Params<N>) -> Self {
         params.one()
     }
 
-    pub fn from_u64(value: u64, params: Fp2Params) -> Self {
+    pub fn from_u64(value: u64, params: Fp2Params<N>) -> Self {
         params.from_u64(value)
     }
 
@@ -135,7 +138,7 @@ impl Fp2 {
     }
 
     pub fn is_one(&self) -> bool {
-        self.c0 == Fp::one(self.params.fp_params.clone()) && self.c1.is_zero()
+        self.c0 == Fp::<N>::one(self.params.fp_params.clone()) && self.c1.is_zero()
     }
 
     fn check_field(&self, other: &Self) {
@@ -150,7 +153,7 @@ impl Fp2 {
         );
     }
 
-    fn with_coefficients(&self, c0: Fp, c1: Fp) -> Self {
+    fn with_coefficients(&self, c0: Fp<N>, c1: Fp<N>) -> Self {
         Self {
             c0,
             c1,
@@ -183,7 +186,7 @@ impl Fp2 {
     // ------------------------------------------------------------
 
     /// Multiply both coefficients by an Fp element.
-    pub fn mul_by_fp(&self, scalar: &Fp) -> Self {
+    pub fn mul_by_fp(&self, scalar: &Fp<N>) -> Self {
         assert_eq!(
             scalar.params.modulus, self.params.fp_params.modulus,
             "Scalar belongs to a different base field"
@@ -231,6 +234,7 @@ impl Fp2 {
 
         self.with_coefficients(c0, c1)
     }
+
     pub fn squared(&self) -> Self {
         self.square()
     }
@@ -238,6 +242,7 @@ impl Fp2 {
     pub fn square_in_place(&mut self) {
         *self = self.square();
     }
+
     /// Alternative complex squaring formula.
     ///
     /// c0 = (a+b)(a+non_residue*b)
@@ -256,7 +261,7 @@ impl Fp2 {
             .sub(&ab)
             .sub(&self.params.non_residue.mul(&ab));
 
-        let two = Fp::from_u64(2, self.params.fp_params.clone());
+        let two = Fp::<N>::from_u64(2, self.params.fp_params.clone());
 
         let c1 = ab.mul(&two);
 
@@ -269,10 +274,9 @@ impl Fp2 {
 
     /// Exponentiation with a little-endian limb array.
     ///
-    /// Supports arbitrary exponent lengths, including 512-bit
-    /// exponents required by Fp2 Tonelli-Shanks.
-    ///
     /// exponent[0] contains the least significant 64 bits.
+    ///
+    /// Supports arbitrary exponent lengths.
     pub fn pow(&self, exponent: &[u64]) -> Self {
         let mut result = self.params.one();
         let mut base = self.clone();
@@ -340,13 +344,11 @@ impl Fp2 {
 
     /// Apply the Frobenius map.
     ///
-    /// For Fp2:
-    ///
     /// (c0 + c1*u)^p
     ///     = c0 + c1 * Frobenius_coeffs_c1[power % 2] * u
     ///
-    /// This implementation follows libff's coefficient-based
-    /// quadratic-extension Frobenius mapping.
+    /// This follows the coefficient-based quadratic-extension
+    /// Frobenius mapping used by libff.
     pub fn frobenius_map(&self, power: usize) -> Self {
         let coeff = &self.params.frobenius_coeffs_c1[power % 2];
 
@@ -357,14 +359,15 @@ impl Fp2 {
     // Serialization
     // ------------------------------------------------------------
 
-    /// Serialize as:
+    /// Serialize as 2*N canonical little-endian u64 words.
     ///
-    /// [c0.limb0, c0.limb1, c0.limb2, c0.limb3,
-    ///  c1.limb0, c1.limb1, c1.limb2, c1.limb3]
+    /// Layout:
+    ///
+    /// [c0.limbs..., c1.limbs...]
     ///
     /// Values are canonical, not Montgomery representations.
     pub fn to_words(&self) -> Vec<u64> {
-        let mut words = Vec::with_capacity(8);
+        let mut words = Vec::with_capacity(2 * N);
 
         words.extend_from_slice(&self.c0.to_words());
         words.extend_from_slice(&self.c1.to_words());
@@ -372,15 +375,15 @@ impl Fp2 {
         words
     }
 
-    /// Deserialize eight canonical little-endian words.
-    pub fn from_words(words: &[u64], params: Fp2Params) -> Option<Self> {
-        if words.len() != 8 {
+    /// Deserialize 2*N canonical little-endian words.
+    pub fn from_words(words: &[u64], params: Fp2Params<N>) -> Option<Self> {
+        if words.len() != 2 * N {
             return None;
         }
 
-        let c0 = Fp::from_words(&words[0..4], params.fp_params.clone())?;
+        let c0 = Fp::<N>::from_words(&words[..N], params.fp_params.clone())?;
 
-        let c1 = Fp::from_words(&words[4..8], params.fp_params.clone())?;
+        let c1 = Fp::<N>::from_words(&words[N..], params.fp_params.clone())?;
 
         Some(Self::new(c0, c1, params))
     }
@@ -391,17 +394,17 @@ impl Fp2 {
 
     /// Algebraic square root in Fp2.
     ///
-    /// For Fp2 = Fp[u] / (u^2 - non_residue):
+    /// For:
     ///
-    ///   z = a + b*u
-    ///   norm(z) = a^2 - non_residue * b^2
+    /// z = a + b*u
+    /// norm(z) = a^2 - non_residue*b^2
     ///
     /// If z = (x + y*u)^2, then:
     ///
-    ///   x^2 = (a + sqrt(norm(z))) / 2
-    ///   y   = b / (2*x)
+    /// x^2 = (a + sqrt(norm(z))) / 2
+    /// y   = b / (2*x)
     ///
-    /// The result is always verified before returning.
+    /// The result is verified before returning.
     pub fn sqrt(&self) -> Option<Self> {
         if self.is_zero() {
             return Some(self.params.zero());
@@ -409,18 +412,18 @@ impl Fp2 {
 
         let fp_params = self.params.fp_params.clone();
 
-        let two = Fp::from_u64(2, fp_params.clone());
+        let two = Fp::<N>::from_u64(2, fp_params.clone());
         let inv_two = two.inverse()?;
 
         let nr = &self.params.non_residue;
 
         // Special case: b == 0.
         //
-        // We first try (sqrt(a), 0).
+        // Try (sqrt(a), 0).
         // If that fails, try (0, sqrt(a / nr)).
         if self.c1.is_zero() {
             if let Some(x) = self.c0.sqrt() {
-                let candidate = Self::new(x, Fp::zero(fp_params.clone()), self.params.clone());
+                let candidate = Self::new(x, Fp::<N>::zero(fp_params.clone()), self.params.clone());
 
                 if candidate.square() == *self {
                     return Some(candidate);
@@ -431,7 +434,7 @@ impl Fp2 {
             let y2 = self.c0.mul(&nr_inv);
 
             if let Some(y) = y2.sqrt() {
-                let candidate = Self::new(Fp::zero(fp_params), y, self.params.clone());
+                let candidate = Self::new(Fp::<N>::zero(fp_params), y, self.params.clone());
 
                 if candidate.square() == *self {
                     return Some(candidate);
@@ -441,7 +444,7 @@ impl Fp2 {
             return None;
         }
 
-        // norm = a^2 - nr * b^2
+        // norm = a^2 - nr*b^2
         let a2 = self.c0.mul(&self.c0);
         let b2 = self.c1.mul(&self.c1);
         let nr_b2 = nr.mul(&b2);
@@ -485,114 +488,6 @@ impl Fp2 {
 
         None
     }
-
-    fn find_non_residue(&self, legendre_exp: &[u64; 8]) -> Option<Self> {
-        let one = self.params.one();
-
-        // Candidates (k, 1), k = 0, 1, 2, ...
-        //
-        // Since c1 != 0, these candidates are nonzero.
-        for k in 0u64..1024 {
-            let candidate = Self::new(
-                Fp::from_u64(k, self.params.fp_params.clone()),
-                Fp::one(self.params.fp_params.clone()),
-                self.params.clone(),
-            );
-
-            if candidate.pow(legendre_exp) != one {
-                return Some(candidate);
-            }
-        }
-
-        None
-    }
-}
-
-// ============================================================================
-// 512-bit helpers for p^2 - 1
-// ============================================================================
-
-/// Multiply two four-limb integers into an eight-limb integer.
-///
-/// All limbs are little-endian.
-fn mul_4x4_to_8(a: Limbs, b: Limbs) -> [u64; 8] {
-    let mut out = [0u64; 8];
-
-    for i in 0..4 {
-        let mut carry = 0u128;
-
-        for j in 0..4 {
-            let uv = (a[i] as u128) * (b[j] as u128) + (out[i + j] as u128) + carry;
-
-            out[i + j] = uv as u64;
-            carry = uv >> 64;
-        }
-
-        let mut k = i + 4;
-        let mut c = carry as u64;
-
-        while c != 0 && k < 8 {
-            let (value, overflow) = out[k].overflowing_add(c);
-
-            out[k] = value;
-            c = overflow as u64;
-            k += 1;
-        }
-
-        debug_assert_eq!(c, 0);
-    }
-
-    out
-}
-
-fn sub_one_8(a: &mut [u64; 8]) {
-    let mut borrow = true;
-
-    for limb in a.iter_mut() {
-        if !borrow {
-            break;
-        }
-
-        let (value, underflow) = limb.overflowing_sub(1);
-
-        *limb = value;
-        borrow = underflow;
-    }
-
-    debug_assert!(!borrow);
-}
-
-fn add_one_8(a: &mut [u64; 8]) {
-    let mut carry = true;
-
-    for limb in a.iter_mut() {
-        if !carry {
-            break;
-        }
-
-        let (value, overflow) = limb.overflowing_add(1);
-
-        *limb = value;
-        carry = overflow;
-    }
-
-    debug_assert!(!carry);
-}
-
-fn shr_one_8(a: &mut [u64; 8]) {
-    let mut carry = 0u64;
-
-    for i in (0..8).rev() {
-        let next_carry = a[i] << 63;
-
-        a[i] = (a[i] >> 1) | carry;
-        carry = next_carry;
-    }
-}
-
-fn shr_8(mut a: [u64; 8]) -> [u64; 8] {
-    shr_one_8(&mut a);
-    a
 }
 
 // ============================================================================
@@ -600,7 +495,9 @@ fn shr_8(mut a: [u64; 8]) -> [u64; 8] {
 // ============================================================================
 
 /// BN254 base field Fq.
-pub fn bn254_fq_params() -> FieldParams {
+///
+/// BN254 uses four u64 limbs.
+pub fn bn254_fq_params() -> FieldParams<4> {
     FieldParams::new([
         0x3c20_8c16_d87c_fd47,
         0x9781_6a91_6871_ca8d,
@@ -612,22 +509,22 @@ pub fn bn254_fq_params() -> FieldParams {
 /// BN254 Fq2 parameters.
 ///
 /// The extension is:
-///```text
-///     Fq2 = Fq[u] / (u^2 + 1)
-///```
+///
+/// Fq2 = Fq[u] / (u^2 + 1)
+///
 /// Therefore:
-///```text
-///     non_residue = -1
-///```
+///
+/// non_residue = -1
+///
 /// Since the BN254 base-field modulus p is congruent to 3 mod 4:
-///```text
-///     u^p = -u
-///```
+///
+/// u^p = -u
+///
 /// Hence the Frobenius coefficients are [1, -1].
-pub fn bn254_fq2_params() -> Fp2Params {
+pub fn bn254_fq2_params() -> Fp2Params<4> {
     let fp_params = bn254_fq_params();
 
-    let one = Fp::one(fp_params.clone());
+    let one = Fp::<4>::one(fp_params.clone());
     let minus_one = one.negate();
 
     Fp2Params::new(fp_params, minus_one.clone(), [one, minus_one])
@@ -641,16 +538,16 @@ pub fn bn254_fq2_params() -> Fp2Params {
 mod tests {
     use super::*;
 
-    fn params() -> Fp2Params {
+    fn params() -> Fp2Params<4> {
         bn254_fq2_params()
     }
 
-    fn element(a: u64, b: u64) -> Fp2 {
+    fn element(a: u64, b: u64) -> Fp2<4> {
         let p = params();
 
         Fp2::new(
-            Fp::from_u64(a, p.fp_params.clone()),
-            Fp::from_u64(b, p.fp_params.clone()),
+            Fp::<4>::from_u64(a, p.fp_params.clone()),
+            Fp::<4>::from_u64(b, p.fp_params.clone()),
             p,
         )
     }
@@ -670,7 +567,7 @@ mod tests {
 
         let result = a.add(&b);
 
-        assert_eq!(result, element(10, 16),);
+        assert_eq!(result, element(10, 16));
     }
 
     #[test]
@@ -678,7 +575,7 @@ mod tests {
         let a = element(10, 16);
         let b = element(7, 11);
 
-        assert_eq!(a.sub(&b), element(3, 5),);
+        assert_eq!(a.sub(&b), element(3, 5));
     }
 
     #[test]
@@ -703,9 +600,9 @@ mod tests {
 
         let p = params();
 
-        let minus_34 = Fp::from_u64(34, p.fp_params.clone()).negate();
+        let minus_34 = Fp::<4>::from_u64(34, p.fp_params.clone()).negate();
 
-        let sixty_eight = Fp::from_u64(68, p.fp_params.clone());
+        let sixty_eight = Fp::<4>::from_u64(68, p.fp_params.clone());
 
         let expected = Fp2::new(minus_34, sixty_eight, p);
 
@@ -716,23 +613,23 @@ mod tests {
     fn test_square() {
         let a = element(3, 5);
 
-        assert_eq!(a.square(), a.mul(&a),);
+        assert_eq!(a.square(), a.mul(&a));
     }
 
     #[test]
     fn test_square_complex() {
         let a = element(3, 5);
 
-        assert_eq!(a.square_complex(), a.square(),);
+        assert_eq!(a.square_complex(), a.square());
     }
 
     #[test]
     fn test_mul_by_fp() {
         let a = element(3, 5);
 
-        let scalar = Fp::from_u64(7, a.params.fp_params.clone());
+        let scalar = Fp::<4>::from_u64(7, a.params.fp_params.clone());
 
-        assert_eq!(a.mul_by_fp(&scalar), element(21, 35),);
+        assert_eq!(a.mul_by_fp(&scalar), element(21, 35));
     }
 
     #[test]
@@ -741,7 +638,7 @@ mod tests {
 
         let inverse = a.inverse().unwrap();
 
-        assert_eq!(a.mul(&inverse), a.params.one(),);
+        assert_eq!(a.mul(&inverse), a.params.one());
     }
 
     #[test]
@@ -758,14 +655,14 @@ mod tests {
         let a2 = a.square();
         let a4 = a2.square();
 
-        assert_eq!(a.pow(&[4]), a4,);
+        assert_eq!(a.pow(&[4]), a4);
     }
 
     #[test]
     fn test_frobenius_zero() {
         let a = element(3, 5);
 
-        assert_eq!(a.frobenius_map(0), a,);
+        assert_eq!(a.frobenius_map(0), a);
     }
 
     #[test]
@@ -776,16 +673,16 @@ mod tests {
 
         let a = element(3, 5);
 
-        let expected = element(3, 5).with_coefficients(a.c0.clone(), a.c1.negate());
+        let expected = a.with_coefficients(a.c0.clone(), a.c1.negate());
 
-        assert_eq!(a.frobenius_map(1), expected,);
+        assert_eq!(a.frobenius_map(1), expected);
     }
 
     #[test]
     fn test_frobenius_two() {
         let a = element(3, 5);
 
-        assert_eq!(a.frobenius_map(2), a,);
+        assert_eq!(a.frobenius_map(2), a);
     }
 
     #[test]
@@ -805,7 +702,7 @@ mod tests {
     fn test_invalid_serialization_length() {
         let words = [1u64, 2, 3, 4];
 
-        assert!(Fp2::from_words(&words, params(),).is_none());
+        assert!(Fp2::from_words(&words, params()).is_none());
     }
 
     #[test]
@@ -816,19 +713,20 @@ mod tests {
 
         let root = square.sqrt().unwrap();
 
-        assert_eq!(root.square(), square,);
+        assert_eq!(root.square(), square);
     }
 
     #[test]
     fn test_sqrt_zero() {
         let zero = params().zero();
 
-        assert_eq!(zero.sqrt().unwrap(), zero,);
+        assert_eq!(zero.sqrt().unwrap(), zero);
     }
 
     #[test]
     fn test_sqrt_non_residue() {
         // In Fq2, (0, 1) is not necessarily a non-residue.
+        //
         // This test checks that sqrt either returns a valid root
         // or correctly reports that no root exists.
         let a = element(3, 5);
@@ -846,6 +744,6 @@ mod tests {
 
         let inverse = a.inverse().unwrap();
 
-        assert_eq!(a.mul(&inverse), params().one(),);
+        assert_eq!(a.mul(&inverse), params().one());
     }
 }

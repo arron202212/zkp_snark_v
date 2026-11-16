@@ -7,29 +7,40 @@ use super::fp2::{Fp2, Fp2Params};
 ///
 /// 因此 v² = u，且 u² = non_residue。
 #[derive(Clone, Debug)]
-pub struct Fp4Params {
-    pub fp2_params: Fp2Params,
+pub struct Fp4Params<const N: usize = 4> {
+    pub fp2_params: Fp2Params<N>,
 
     /// Fp2 中 u² 对应的底域非剩余元。
-    pub non_residue: Fp,
+    ///
+    /// 对 MNT4，u² = 17。
+    pub non_residue: Fp<N>,
 
     /// Fp4 的 Frobenius 系数。
-    pub frobenius_coeffs_c1: [Fp2; 4],
+    ///
+    /// 对应 libff:
+    /// Fp4_model::Frobenius_coeffs_c1
+    ///
+    /// 注意：系数属于 Fp，而不是 Fp2。
+    pub frobenius_coeffs_c1: [Fp<N>; 4],
 }
 
 #[derive(Clone, Debug)]
-pub struct Fp4 {
+pub struct Fp4<const N: usize = 4> {
     /// 常数项
-    pub c0: Fp2,
+    pub c0: Fp2<N>,
 
     /// v 的系数
-    pub c1: Fp2,
+    pub c1: Fp2<N>,
 
-    pub params: Fp4Params,
+    pub params: Fp4Params<N>,
 }
 
-impl Fp4Params {
-    pub fn new(fp2_params: Fp2Params, non_residue: Fp, frobenius_coeffs_c1: [Fp2; 4]) -> Self {
+impl<const N: usize> Fp4Params<N> {
+    pub fn new(
+        fp2_params: Fp2Params<N>,
+        non_residue: Fp<N>,
+        frobenius_coeffs_c1: [Fp<N>; 4],
+    ) -> Self {
         Self {
             fp2_params,
             non_residue,
@@ -38,27 +49,27 @@ impl Fp4Params {
     }
 }
 
-impl Fp4 {
-    pub fn new(c0: Fp2, c1: Fp2, params: Fp4Params) -> Self {
+impl<const N: usize> Fp4<N> {
+    pub fn new(c0: Fp2<N>, c1: Fp2<N>, params: Fp4Params<N>) -> Self {
         Self { c0, c1, params }
     }
 
-    pub fn zero(params: Fp4Params) -> Self {
+    pub fn zero(params: Fp4Params<N>) -> Self {
         let fp2_params = params.fp2_params.clone();
 
         Self {
-            c0: Fp2::zero(fp2_params.clone()),
-            c1: Fp2::zero(fp2_params),
+            c0: Fp2::<N>::zero(fp2_params.clone()),
+            c1: Fp2::<N>::zero(fp2_params),
             params,
         }
     }
 
-    pub fn one(params: Fp4Params) -> Self {
+    pub fn one(params: Fp4Params<N>) -> Self {
         let fp2_params = params.fp2_params.clone();
 
         Self {
-            c0: Fp2::one(fp2_params.clone()),
-            c1: Fp2::zero(fp2_params),
+            c0: Fp2::<N>::one(fp2_params.clone()),
+            c1: Fp2::<N>::zero(fp2_params),
             params,
         }
     }
@@ -79,11 +90,13 @@ impl Fp4 {
     ///
     /// Fp4_model::mul_by_non_residue()
     ///
-    /// u * (c0 + c1*u) = non_residue*c1 + c0*u
+    /// 对 Fp2 元素 x = a + bu:
+    ///
+    /// u * x = non_residue*b + a*u
     ///
     /// 这里的 u 是 Fp2 的扩域生成元。
-    pub fn mul_by_non_residue(&self, value: &Fp2) -> Fp2 {
-        Fp2::new(
+    pub fn mul_by_non_residue(&self, value: &Fp2<N>) -> Fp2<N> {
+        Fp2::<N>::new(
             value.c1.mul(&self.params.non_residue),
             value.c0.clone(),
             self.params.fp2_params.clone(),
@@ -111,7 +124,7 @@ impl Fp4 {
     }
 
     /// Fp 标量乘法。
-    pub fn mul_by_fp(&self, scalar: &Fp) -> Self {
+    pub fn mul_by_fp(&self, scalar: &Fp<N>) -> Self {
         Self::new(
             self.c0.mul_by_fp(scalar),
             self.c1.mul_by_fp(scalar),
@@ -120,7 +133,7 @@ impl Fp4 {
     }
 
     /// Fp2 标量乘法。
-    pub fn mul_by_fp2(&self, scalar: &Fp2) -> Self {
+    pub fn mul_by_fp2(&self, scalar: &Fp2<N>) -> Self {
         Self::new(
             self.c0.mul(scalar),
             self.c1.mul(scalar),
@@ -157,6 +170,8 @@ impl Fp4 {
     /// 对应 libff 的 mul_by_023。
     ///
     /// 要求 other.c0.c1 == 0，即 other.c0 是 Fp 的嵌入元素。
+    ///
+    /// Miller loop 中使用该稀疏乘法。
     pub fn mul_by_023(&self, other: &Self) -> Self {
         assert!(
             other.c0.c1.is_zero(),
@@ -169,7 +184,7 @@ impl Fp4 {
         let b2 = &other.c1;
 
         // a * A，其中 A 只有 Fp 常数项。
-        let aa = Fp2::new(
+        let aa = Fp2::<N>::new(
             a.c0.mul(&a2.c0),
             a.c1.mul(&a2.c0),
             self.params.fp2_params.clone(),
@@ -233,20 +248,28 @@ impl Fp4 {
         }
     }
 
+    /// Unitary inverse。
+    ///
+    /// 仅对 unitary subgroup 中的元素成立。
     pub fn unitary_inverse(&self) -> Self {
         Self::new(self.c0.clone(), self.c1.negate(), self.params.clone())
     }
 
-    /// Frobenius map.
+    /// Frobenius map。
     ///
     /// c0 <- Frobenius(c0)
     /// c1 <- coeff[power % 4] * Frobenius(c1)
+    ///
+    /// Frobenius 系数是 Fp 元素，因此使用 mul_by_fp。
     pub fn frobenius_map(&self, power: usize) -> Self {
         let index = power % 4;
 
         let c0 = self.c0.frobenius_map(power);
 
-        let c1 = self.params.frobenius_coeffs_c1[index].mul(&self.c1.frobenius_map(power));
+        let c1 = self
+            .c1
+            .frobenius_map(power)
+            .mul_by_fp(&self.params.frobenius_coeffs_c1[index]);
 
         Self::new(c0, c1, self.params.clone())
     }
@@ -274,7 +297,7 @@ impl Fp4 {
         result
     }
 
-    /// Cyclotomic square.
+    /// Cyclotomic square。
     ///
     /// 仅适用于 cyclotomic subgroup 中的元素。
     pub fn cyclotomic_squared(&self) -> Self {
@@ -287,16 +310,19 @@ impl Fp4 {
 
         let dd = self.mul_by_non_residue(&aa);
         let ee = cc.sub(&dd);
-        let ff = dd.add(&dd).add(&Fp2::one(self.params.fp2_params.clone()));
-        let gg = ee.sub(&Fp2::one(self.params.fp2_params.clone()));
+
+        let one = Fp2::<N>::one(self.params.fp2_params.clone());
+
+        let ff = dd.add(&dd).add(&one);
+        let gg = ee.sub(&one);
 
         Self::new(ff, gg, self.params.clone())
     }
 
-    /// Cyclotomic exponentiation.
+    /// Cyclotomic exponentiation。
     ///
-    /// 这里使用普通二进制幂运算，保证语义正确。
-    /// 若需要与 libff 一样使用 wNAF，可再替换为 wNAF 实现。
+    /// 使用 cyclotomic square 和普通二进制乘法。
+    /// 输入必须属于 cyclotomic subgroup。
     pub fn cyclotomic_exp(&self, exponent: &[u64]) -> Self {
         let mut result = Self::one(self.params.clone());
         let mut base = self.clone();
@@ -317,24 +343,30 @@ impl Fp4 {
         result
     }
 
-    /// 序列化为 16 个 u64。
+    /// 序列化为 little-endian u64 limbs。
     ///
-    /// c0 || c1，每个 Fp2 为 8 个 u64。
+    /// 每个 Fp<N> 有 N 个 limbs：
+    /// Fp2<N> = 2*N
+    /// Fp4<N> = 4*N
     pub fn to_words(&self) -> Vec<u64> {
         let mut words = self.c0.to_words();
         words.extend(self.c1.to_words());
         words
     }
 
-    /// 从 16 个 u64 反序列化。
-    pub fn from_words(words: &[u64], params: Fp4Params) -> Option<Self> {
-        if words.len() != 16 {
+    /// 从 little-endian u64 limbs 反序列化。
+    ///
+    /// Fp4<N> 需要恰好 4*N 个 limbs。
+    pub fn from_words(words: &[u64], params: Fp4Params<N>) -> Option<Self> {
+        let fp2_words = 2 * N;
+
+        if words.len() != 4 * N {
             return None;
         }
 
-        let c0 = Fp2::from_words(&words[0..8], params.fp2_params.clone())?;
+        let c0 = Fp2::<N>::from_words(&words[..fp2_words], params.fp2_params.clone())?;
 
-        let c1 = Fp2::from_words(&words[8..16], params.fp2_params.clone())?;
+        let c1 = Fp2::<N>::from_words(&words[fp2_words..], params.fp2_params.clone())?;
 
         Some(Self::new(c0, c1, params))
     }
@@ -343,37 +375,46 @@ impl Fp4 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::algebra::fields::prime_base::fp_montgomery::FieldParams;
-    fn test_fp4_params() -> Fp4Params {
-        let fp_params = FieldParams::new([7, 0, 0, 0]);
+
+    fn test_fp4_params() -> Fp4Params<4> {
+        let fp_params = FieldParams::<4>::new([7, 0, 0, 0]);
 
         // Fp2 = F7[u] / (u² - 3)
         // 3 在 F7 中不是平方，因此 Fp2 是扩域。
-        let nr = Fp::from_u64(3, fp_params.clone());
+        let nr = Fp::<4>::from_u64(3, fp_params.clone());
 
-        let fp2_params = Fp2Params::new(
+        let fp2_params = Fp2Params::<4>::new(
             fp_params.clone(),
             nr.clone(),
             [
-                Fp::one(fp_params.clone()),
-                Fp::from_u64(6, fp_params.clone()),
+                Fp::<4>::one(fp_params.clone()),
+                Fp::<4>::from_u64(6, fp_params.clone()),
             ],
         );
 
-        let _zero = Fp2::zero(fp2_params.clone());
-        let one = Fp2::one(fp2_params.clone());
+        let one = Fp2::<4>::one(fp2_params.clone());
 
-        // Frobenius 系数需要根据具体扩域参数计算。
-        // 此测试主要验证乘法、平方、求逆和序列化。
-        Fp4Params::new(fp2_params, nr, [one.clone(), one.clone(), one.clone(), one])
+        // 该测试只验证基本运算，不用于验证真实 Frobenius 映射。
+        Fp4Params::<4>::new(
+            fp2_params,
+            nr,
+            [
+                Fp::<4>::one(fp_params.clone()),
+                Fp::<4>::one(fp_params.clone()),
+                Fp::<4>::one(fp_params.clone()),
+                Fp::<4>::one(fp_params),
+            ],
+        )
     }
 
     #[test]
     fn test_fp4_zero_one() {
         let params = test_fp4_params();
 
-        let zero = Fp4::zero(params.clone());
-        let one = Fp4::one(params);
+        let zero = Fp4::<4>::zero(params.clone());
+        let one = Fp4::<4>::one(params);
 
         assert!(zero.is_zero());
         assert!(one.is_one());
@@ -384,7 +425,7 @@ mod tests {
     fn test_fp4_add_sub() {
         let params = test_fp4_params();
 
-        let a = Fp4::one(params.clone());
+        let a = Fp4::<4>::one(params.clone());
         let b = a.add(&a);
 
         assert!(b.sub(&a).equals(&a));
@@ -394,7 +435,7 @@ mod tests {
     fn test_fp4_mul_square() {
         let params = test_fp4_params();
 
-        let a = Fp4::one(params.clone());
+        let a = Fp4::<4>::one(params.clone());
 
         assert!(a.mul(&a).equals(&a.square()));
     }
@@ -403,7 +444,7 @@ mod tests {
     fn test_fp4_inverse() {
         let params = test_fp4_params();
 
-        let a = Fp4::one(params.clone());
+        let a = Fp4::<4>::one(params.clone());
 
         let inverse = a.inverse().unwrap();
 
@@ -414,16 +455,16 @@ mod tests {
     fn test_fp4_serialization() {
         let params = test_fp4_params();
 
-        let a = Fp4::one(params.clone());
+        let a = Fp4::<4>::one(params.clone());
 
         let words = a.to_words();
 
         assert_eq!(words.len(), 16);
 
-        let b = Fp4::from_words(&words, params.clone()).unwrap();
+        let b = Fp4::<4>::from_words(&words, params.clone()).unwrap();
 
         assert!(a.equals(&b));
 
-        assert!(Fp4::from_words(&words[..8], params).is_none());
+        assert!(Fp4::<4>::from_words(&words[..8], params).is_none());
     }
 }

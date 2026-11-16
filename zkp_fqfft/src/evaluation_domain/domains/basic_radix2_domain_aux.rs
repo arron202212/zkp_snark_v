@@ -1,291 +1,281 @@
-//  Declaration of interfaces for auxiliary functions for the "basic radix-2" evaluation domain.
-//  These functions compute the radix-2 FFT (in single- or multi-thread mode) and,
-//  also compute Lagrange coefficients.
+use crate::polynomial_arithmetic::field::PolynomialField;
 
-// /**
-//  * Compute the radix-2 FFT of the vector a over the set S={omega^{0},...,omega^{m-1}}.
-//  */
-//
-// pub fn _basic_radix2_FFT(a:Vec<FieldT>, omega:&FieldT);
-
-// /**
-//  * A multi-thread version of _basic_radix2_FFT.
-//  */
-//
-// pub fn _parallel_basic_radix2_FFT(a:Vec<FieldT>, omega:&FieldT);
-
-// /**
-//  * Translate the vector a to a coset defined by g.
-//  */
-//
-// pub fn _multiply_by_coset(a:Vec<FieldT>, g:&FieldT);
-
-// /**
-//  * Compute the m Lagrange coefficients, relative to the set S={omega^{0},...,omega^{m-1}}, at the field element t.
-//  */
-//
-// Vec<FieldT> _basic_radix2_evaluate_all_lagrange_polynomials(m:usize, t:&FieldT);
-
-use crate::tools::exceptions;
-use ffec::FieldTConfig;
-use ffec::algebra::field_utils::field_utils;
-use ffec::algebra::field_utils::field_utils::get_root_of_unity_for_not_double;
-use ffec::common::profiling::print_indent;
-use ffec::common::utils::bitreverse;
-use ffec::common::utils::log2;
-use num_traits::One;
-use std::ops::BitXor;
-use std::ops::MulAssign;
-
-// #ifdef MULTICORE
-// #define _basic_radix2_FFT _basic_parallel_radix2_FFT
-// #else
-// #define _basic_radix2_FFT _basic_serial_radix2_FFT
-
-//  FieldT: num_traits::One
-//         + Clone
-//         + std::ops::BitXor<Output = FieldT>
-//         + std::convert::From<usize>
-//         + std::ops::MulAssign
-//         + std::ops::AddAssign
-//         + std::ops::Sub<Output = FieldT>,
-#[inline]
-pub fn _basic_radix2_FFT<FieldT: FieldTConfig>(
-    a: &mut Vec<FieldT>,
-    omega: &FieldT,
-) -> eyre::Result<()> {
-    _basic_serial_radix2_FFT(a, omega)
+/// FFT 错误。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FftError {
+    EmptyInput,
+    SizeNotPowerOfTwo,
+    InvalidFieldSize,
+    ZeroInverse,
+    SizeOverflow,
 }
 
-// /*
-// Below we make use of pseudocode from [CLRS 2n Ed, pp. 864].
-// Also, note that it's the caller's responsibility to multiply by 1/N.
-// */
-// FieldT: num_traits::One
-//         + std::ops::MulAssign
-//         + Clone
-//         + BitXor<Output = FieldT>
-//         + std::convert::From<usize>
-//         + std::ops::AddAssign
-//         + std::ops::Sub<Output = FieldT>,
-
-pub fn _basic_serial_radix2_FFT<FieldT: FieldTConfig>(
-    a: &mut Vec<FieldT>,
-    omega: &FieldT,
-) -> eyre::Result<()> {
-    let n = a.len();
-    let logn = log2(n);
-    if n != (1usize << logn) {
-        eyre::bail!("expected n == (1usize << logn)");
+/// 计算 log2(n)。
+fn log2_exact(n: usize) -> Result<u32, FftError> {
+    if n == 0 {
+        return Err(FftError::EmptyInput);
     }
 
-    //swapping in place (from Storer's book)
+    if !n.is_power_of_two() {
+        return Err(FftError::SizeNotPowerOfTwo);
+    }
+
+    Ok(n.trailing_zeros())
+}
+
+/// 计算 bit-reversal。
+fn bit_reverse(value: usize, bits: u32) -> usize {
+    value.reverse_bits() >> (usize::BITS - bits)
+}
+
+/// 计算 radix-2 FFT。
+///
+/// 输入：
+///```text           
+///     a[i] = 多项式的第 i 个系数
+///
+/// 输出：
+///
+///     a[i] = f(omega^i)
+///```
+/// 注意：这里不进行 1/n 缩放。
+pub fn basic_radix2_fft<F: PolynomialField>(a: &mut [F], omega: &F) -> Result<(), FftError> {
+    let n = a.len();
+    let log_n = log2_exact(n)?;
+
+    // Bit-reversal permutation.
     for k in 0..n {
-        let rk = bitreverse(k, logn);
+        let rk = bit_reverse(k, log_n);
+
         if k < rk {
             a.swap(k, rk);
         }
     }
-    let omega: FieldT = omega.clone();
-    let mut m = 1; // invariant: m = 2^{s-1}
-    for s in 1..=logn {
-        let nm = (n / (2 * m));
-        // w_m is 2^s-th root of unity now
-        let w_m: FieldT = omega.clone() ^ nm;
 
-        // asm volatile  ("//pre-inner");
-        for k in 0..n {
-            let mut w = FieldT::one();
+    // Iterative Cooley-Tukey FFT.
+    let mut m = 1usize;
+
+    for _s in 1..=log_n {
+        let two_m = m.checked_mul(2).ok_or(FftError::SizeOverflow)?;
+
+        // w_m = omega^(n / (2*m))
+        let exponent = n / two_m;
+        let w_m = omega.pow_usize(exponent);
+
+        let mut k = 0usize;
+
+        while k < n {
+            let mut w = omega.one_like();
+
             for j in 0..m {
-                let t = w.clone() * a[k + j + m].clone();
-                a[k + j + m] = a[k + j].clone() - t.clone();
-                a[k + j] += t.clone();
-                w *= w_m.clone();
+                let t = w.mul(&a[k + j + m]);
+
+                let left = a[k + j].clone();
+
+                a[k + j + m] = left.sub(&t);
+                a[k + j] = left.add(&t);
+
+                w = w.mul(&w_m);
             }
+
+            k += two_m;
         }
-        // asm volatile ("//post-inner");
-        m *= 2;
+
+        m = two_m;
     }
+
     Ok(())
 }
 
-//  FieldT: num_traits::Zero
-//         + BitXor<Output = FieldT>
-//         + std::ops::Sub
-//         + std::convert::From<usize>
-//         + std::ops::Sub<Output = FieldT>
-//         + One
-//         + std::ops::MulAssign
-//         + Clone
-//         + std::ops::AddAssign,
-
-pub fn _basic_parallel_radix2_FFT_inner<FieldT: FieldTConfig>(
-    a: &mut Vec<FieldT>,
-    omega: &FieldT,
-    log_cpus: usize,
-) -> eyre::Result<()> {
-    let num_cpus = 1usize << log_cpus;
-
-    let m = a.len();
-    let log_m = log2(m);
-    if m != 1usize << log_m {
-        eyre::bail!("expected m == 1u64<<log_m");
-    }
-
-    if log_m < log_cpus {
-        _basic_serial_radix2_FFT(a, omega);
-        return Ok(());
-    }
-
-    let mut tmp = vec![vec![]; num_cpus];
-    for j in 0..num_cpus {
-        tmp[j].resize(1usize << (log_m - log_cpus), FieldT::zero());
-    }
-    let omega_clone: FieldT = omega.clone();
-    // #ifdef MULTICORE
-    // //#pragma omp parallel for
-
-    for j in 0..num_cpus {
-        let omega_j = omega_clone.clone() ^ (j);
-        let omega_step = omega_clone.clone() ^ (j << (log_m - log_cpus));
-
-        let mut elt = FieldT::one();
-        for i in 0..1usize << (log_m - log_cpus) {
-            for s in 0..num_cpus {
-                // invariant: elt is omega^(j*idx)
-                let idx = (i + (s << (log_m - log_cpus))) % (1usize << log_m);
-                tmp[j][i] += a[idx].clone() * elt.clone();
-                elt *= omega_step.clone();
-            }
-            elt *= omega_j.clone();
-        }
-    }
-
-    let omega_num_cpus = omega_clone ^ num_cpus;
-
-    // #ifdef MULTICORE
-    //#pragma omp parallel for
-
-    for j in 0..num_cpus {
-        _basic_serial_radix2_FFT(&mut tmp[j], &omega_num_cpus);
-    }
-
-    // #ifdef MULTICORE
-    //#pragma omp parallel for
-
-    for i in 0..num_cpus {
-        for j in 0..1usize << (log_m - log_cpus) {
-            // now: i = idx >> (log_m - log_cpus) and j = idx % (1u32 << (log_m - log_cpus)), for idx = ((i<<(log_m-log_cpus))+j) % (1u32 << log_m)
-            a[(j << log_cpus) + i] = tmp[i][j].clone();
-        }
-    }
-    Ok(())
+/// 多线程 FFT 接口。
+///
+/// 当前先使用串行算法，保持与 C++ 串行实现相同的数学结果。
+/// 后续可以在不改变调用接口的情况下替换为 Rayon 实现。
+pub fn parallel_basic_radix2_fft<F: PolynomialField>(
+    a: &mut [F],
+    omega: &F,
+) -> Result<(), FftError> {
+    basic_radix2_fft(a, omega)
 }
 
-//  FieldT: num_traits::Zero
-//         + BitXor<Output = FieldT>
-//         + std::convert::From<usize>
-//         + std::ops::Sub<Output = FieldT>
-//         + std::ops::MulAssign
-//         + Clone
-//         + num_traits::One
-//         + std::ops::AddAssign,
-pub fn _basic_parallel_radix2_FFT<FieldT: FieldTConfig>(a: &mut Vec<FieldT>, omega: &FieldT) {
-    // #ifdef MULTICORE
-    //     let num_cpus = omp_get_max_threads();
-    // #else
-    const num_cpus: usize = 1;
+/// 将多项式系数转换到 coset。
+///
+/// a[i] = a[i] * g^i
+///
+/// 对应 C++：
+/// _multiply_by_coset(a, g)
+pub fn multiply_by_coset<F: PolynomialField>(a: &mut [F], g: &F) {
+    let mut u = g.clone();
 
-    let log_cpus = if num_cpus & (num_cpus - 1) == 0 {
-        log2(num_cpus)
-    } else {
-        log2(num_cpus) - 1
-    };
-
-    // #ifdef DEBUG
-    print_indent();
-    print!(
-        "* Invoking parallel FFT on 2^{} CPUs (omp_get_max_threads = {})\n",
-        log_cpus, num_cpus
-    );
-
-    if log_cpus == 0 {
-        _basic_serial_radix2_FFT(a, omega);
-    } else {
-        _basic_parallel_radix2_FFT_inner(a, omega, log_cpus);
-    }
-}
-// Clone + std::ops::MulAssign + std::convert::From<usize>
-pub fn _multiply_by_coset<FieldT: FieldTConfig>(a: &mut Vec<FieldT>, g: &FieldT) {
-    let mut u: FieldT = g.clone();
-    for i in 1..a.len() {
-        a[i] *= u.clone();
-        u *= g.clone();
+    for value in a.iter_mut().skip(1) {
+        *value = value.mul(&u);
+        u = u.mul(g);
     }
 }
 
-// One
-//         + Clone
-//         + BitXor<Output = FieldT>
-//         + std::cmp::PartialEq
-//         + std::ops::MulAssign
-//         + std::ops::Sub<Output = FieldT>
-//         + std::convert::From<usize>
-//         + num_traits::Zero
-//         + std::default::Default,
-
-pub fn _basic_radix2_evaluate_all_lagrange_polynomials<FieldT: FieldTConfig>(
+/// 计算全部 Lagrange 基函数在 t 处的值。
+///```text
+/// S = {1, omega, omega^2, ..., omega^(m-1)}
+///
+/// 返回：
+///
+///     [L_0(t), L_1(t), ..., L_(m-1)(t)]
+///```
+/// 要求 omega 是 m 阶原始单位根。
+pub fn basic_radix2_evaluate_all_lagrange_polynomials<F: PolynomialField>(
     m: usize,
-    t: &FieldT,
-) -> eyre::Result<Vec<FieldT>> {
+    t: &F,
+    omega: &F,
+    params: &F::Params,
+) -> Result<Vec<F>, FftError> {
+    if m == 0 {
+        return Err(FftError::EmptyInput);
+    }
+
     if m == 1 {
-        return Ok(vec![FieldT::one()]);
+        return Ok(vec![F::one(params)]);
     }
 
-    if m != (1usize << log2(m)) {
-        eyre::bail!("expected m == (1u32 << log2(m))");
+    if !m.is_power_of_two() {
+        return Err(FftError::SizeNotPowerOfTwo);
     }
 
-    let omega = get_root_of_unity_for_not_double::<FieldT>(m)?;
+    let m_u64 = u64::try_from(m).map_err(|_| FftError::SizeOverflow)?;
 
-    let mut u = vec![FieldT::zero(); m];
+    let one = F::one(params);
 
-    // /*
-    // If t equals one of the roots of unity in S={omega^{0},...,omega^{m-1}}
-    // then output 1 at the right place, and 0 elsewhere
-    // */
-    let tt: FieldT = t.clone();
-    let tm: FieldT = tt.clone() ^ m;
-    if tm == FieldT::one() {
-        let mut omega_i = FieldT::one();
-        for i in 0..m {
-            if &omega_i == t
-            // i.e., t equals omega^i
-            {
-                u[i] = FieldT::one();
-                return Ok(u);
+    let mut result = vec![F::zero(params); m];
+
+    // Z(t) = t^m - 1
+    let z = t.pow_usize(m).sub(&one);
+
+    // If t is one of the roots of unity:
+    //
+    // L_i(t) = 1 if t = omega^i
+    // L_i(t) = 0 otherwise
+    if z.is_zero() {
+        let mut omega_i = one.clone();
+
+        for value in result.iter_mut() {
+            if omega_i == *t {
+                *value = one;
+                return Ok(result);
             }
 
-            omega_i *= omega.clone();
+            omega_i = omega_i.mul(omega);
         }
+
+        // If omega is a valid m-th root, this branch should not occur.
+        return Err(FftError::InvalidFieldSize);
     }
 
-    // /*
-    // Otherwise, if t does not equal any of the roots of unity in S,
-    // then compute each L_{i,S}(t) as Z_{S}(t) * v_i / (t-\omega^i)
-    // where:
-    // - Z_{S}(t) = \prod_{j} (t-\omega^j) = (t^m-1), and
-    // - v_{i} = 1 / \prod_{j \neq i} (\omega^i-\omega^j).
-    // Below we use the fact that v_{0} = 1/m and v_{i+1} = \omega * v_{i}.
-    // */
-    let Z = (tt.clone() ^ m) - FieldT::one();
-    // let l = Z * FieldT::from(m).inverse();
-    let mut r = FieldT::one();
-    for i in 0..m {
-        // u[i] = l * (t - r).inverse();
-        // l *= omega;
-        r *= omega.clone();
+    // l = Z(t) / m
+    let m_element = F::from_u64(m_u64, params);
+
+    let m_inverse = m_element.inverse().ok_or(FftError::ZeroInverse)?;
+
+    let mut l = z.mul(&m_inverse);
+    let mut r = one;
+
+    // C++:
+    //
+    // u[i] = l * (t - r).inverse()
+    // l *= omega
+    // r *= omega
+    //
+    for value in result.iter_mut() {
+        let denominator = t.sub(&r);
+
+        let denominator_inverse = denominator.inverse().ok_or(FftError::ZeroInverse)?;
+
+        *value = l.mul(&denominator_inverse);
+
+        l = l.mul(omega);
+        r = r.mul(omega);
     }
 
-    return Ok(u);
+    Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use zkp_ff::algebra::fields::prime_base::fp::Fp;
+    use zkp_ff::algebra::fields::prime_base::fp_montgomery::FieldParams;
+
+    fn fr_params() -> FieldParams {
+        FieldParams::new([
+            0x43e1_f593_f000_0001,
+            0x2833_e848_79b9_7091,
+            0xb850_45b6_8181_585d,
+            0x3064_4e72_e131_a029,
+        ])
+    }
+
+    fn canonical(value: &Fp) -> [u64; 4] {
+        value.to_canonical()
+    }
+
+    #[test]
+    fn test_bit_reverse() {
+        assert_eq!(bit_reverse(0, 3), 0);
+        assert_eq!(bit_reverse(1, 3), 4);
+        assert_eq!(bit_reverse(2, 3), 2);
+        assert_eq!(bit_reverse(3, 3), 6);
+        assert_eq!(bit_reverse(4, 3), 1);
+    }
+
+    #[test]
+    fn test_coset_multiplication() {
+        let params = fr_params();
+
+        let g = Fp::from_u64(3, params.clone());
+
+        let mut values = vec![
+            Fp::from_u64(2, params.clone()),
+            Fp::from_u64(3, params.clone()),
+            Fp::from_u64(4, params.clone()),
+        ];
+
+        multiply_by_coset(&mut values, &g);
+
+        assert_eq!(canonical(&values[0]), [2, 0, 0, 0]);
+
+        assert_eq!(canonical(&values[1]), [9, 0, 0, 0]);
+
+        assert_eq!(canonical(&values[2]), [36, 0, 0, 0]);
+    }
+
+    #[test]
+    fn test_fft_size_validation() {
+        let params = fr_params();
+
+        let omega = Fp::one(params.clone());
+
+        let mut values = vec![
+            Fp::from_u64(1, params.clone()),
+            Fp::from_u64(2, params.clone()),
+            Fp::from_u64(3, params.clone()),
+        ];
+
+        assert_eq!(
+            basic_radix2_fft(&mut values, &omega),
+            Err(FftError::SizeNotPowerOfTwo)
+        );
+    }
+
+    #[test]
+    fn test_lagrange_m_equals_one() {
+        let params = fr_params();
+
+        let t = Fp::from_u64(123, params.clone());
+        let omega = Fp::one(params.clone());
+
+        let result =
+            basic_radix2_evaluate_all_lagrange_polynomials(1, &t, &omega, &params).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], Fp::one(params));
+    }
 }

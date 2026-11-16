@@ -1,122 +1,123 @@
-//  Declaration of interfaces for public parameters of MNT4.
-
-use crate::{
-    PublicParams, PublicParamsType,
-    algebra::curves::mnt::mnt4::{
-        mnt4_fields::{mnt4_Fq, mnt4_Fq2, mnt4_Fq4, mnt4_Fr, mnt4_GT},
-        mnt4_g1::mnt4_G1,
-        mnt4_g2::mnt4_G2,
-        mnt4_init::init_mnt4_params,
-        mnt4_pairing::{
-            mnt4_G1_precomp, mnt4_G2_precomp, mnt4_affine_ate_G1_precomputation,
-            mnt4_affine_ate_G2_precomputation, mnt4_affine_ate_miller_loop,
-            mnt4_affine_ate_precompute_G1, mnt4_affine_ate_precompute_G2,
-            mnt4_affine_reduced_pairing, mnt4_double_miller_loop, mnt4_final_exponentiation,
-            mnt4_miller_loop, mnt4_pairing, mnt4_precompute_G1, mnt4_precompute_G2,
-            mnt4_reduced_pairing,
-        },
-    },
+use super::mnt4_g1::Mnt4G1;
+use super::mnt4_g2::Mnt4G2;
+use super::mnt4_init::{Mnt4InitializedParams, init_mnt4_params};
+use super::mnt4_pairing::{
+    Mnt4AteG1Precomp, Mnt4AteG2Precomp, Mnt4Fq4, Mnt4GT, mnt4_ate_double_miller_loop,
+    mnt4_ate_miller_loop, mnt4_ate_precompute_g1, mnt4_ate_precompute_g2,
+    mnt4_final_exponentiation, mnt4_pairing, mnt4_reduced_pairing,
 };
 
-#[derive(Default, Clone)]
-pub struct mnt4_pp;
-impl PublicParamsType for mnt4_pp {
-    type Fp_type = mnt4_Fr;
-    type G1_type = mnt4_G1;
-    type G2_type = mnt4_G2;
-    type G1_precomp_type = mnt4_G1_precomp;
-    type G2_precomp_type = mnt4_G2_precomp;
-    type affine_ate_G1_precomp_type = mnt4_affine_ate_G1_precomputation;
-    type affine_ate_G2_precomp_type = mnt4_affine_ate_G2_precomputation;
-    type Fq_type = mnt4_Fq;
-    type Fqe_type = mnt4_Fq2;
-    type Fqk_type = mnt4_Fq4;
-    type GT_type = mnt4_GT;
-}
+/// MNT4 public parameters interface.
+///
+/// Corresponds to libff::mnt4_pp.
+pub struct Mnt4PP;
 
-impl PublicParams for mnt4_pp {
-    type Fr = mnt4_Fr;
-    type G1 = mnt4_G1;
-    type G2 = mnt4_G2;
-    type GT = mnt4_GT;
-    type affine_ate_G1_precomp = mnt4_affine_ate_G1_precomputation;
-    type affine_ate_G2_precomp = mnt4_affine_ate_G2_precomputation;
-    fn init_public_params() {
-        init_mnt4_params();
+/// Field and group aliases.
+pub type FpType = crate::algebra::fields::prime_base::fp::Fp<5>;
+pub type G1Type = Mnt4G1;
+pub type G2Type = Mnt4G2;
+pub type G1PrecompType = Mnt4AteG1Precomp;
+pub type G2PrecompType = Mnt4AteG2Precomp;
+pub type FqType = crate::algebra::fields::prime_base::fp::Fp<5>;
+pub type FqeType = crate::algebra::fields::prime_extension::fp2::Fp2<5>;
+pub type FqkType = Mnt4Fq4;
+pub type GTType = Mnt4GT;
+
+/// MNT4 supports affine pairing in the original libff implementation.
+///
+/// The affine Ate implementation is not yet exposed by the current
+/// Rust mnt4_pairing module.
+pub const HAS_AFFINE_PAIRING: bool = true;
+
+impl Mnt4PP {
+    /// Initialize MNT4 public parameters.
+    ///
+    /// C++:
+    ///     mnt4_pp::init_public_params()
+    ///
+    /// Rust returns the initialized parameters instead of relying
+    /// on C++-style global mutable state.
+    pub fn init_public_params() -> Mnt4InitializedParams {
+        init_mnt4_params()
     }
 
-    fn final_exponentiation(elt: &mnt4_Fq4) -> mnt4_GT {
+    /// Final exponentiation.
+    ///
+    /// C++:
+    ///     mnt4_pp::final_exponentiation(elt)
+    pub fn final_exponentiation(elt: &Mnt4Fq4) -> Mnt4GT {
         mnt4_final_exponentiation(elt)
     }
 
-    fn precompute_G1(P: &mnt4_G1) -> mnt4_G1_precomp {
-        mnt4_precompute_G1(P)
+    /// Precompute G1.
+    ///
+    /// C++:
+    ///     mnt4_pp::precompute_G1(P)
+    pub fn precompute_g1(p: &G1Type) -> G1PrecompType {
+        mnt4_ate_precompute_g1(p)
     }
 
-    fn precompute_G2(Q: &mnt4_G2) -> mnt4_G2_precomp {
-        mnt4_precompute_G2(Q)
+    /// Precompute G2.
+    ///
+    /// C++:
+    ///     mnt4_pp::precompute_G2(Q)
+    pub fn precompute_g2(q: &G2Type) -> G2PrecompType {
+        mnt4_ate_precompute_g2(q)
     }
 
-    fn miller_loop(prec_P: &mnt4_G1_precomp, prec_Q: &mnt4_G2_precomp) -> mnt4_Fq4 {
-        mnt4_miller_loop(prec_P, prec_Q)
+    /// Miller loop using precomputed G1 and G2.
+    ///
+    /// C++:
+    ///     mnt4_pp::miller_loop(prec_P, prec_Q)
+    pub fn miller_loop(prec_p: &G1PrecompType, prec_q: &G2PrecompType) -> Mnt4Fq4 {
+        mnt4_ate_miller_loop(prec_p, prec_q)
     }
 
-    fn affine_ate_precompute_G1(P: &mnt4_G1) -> mnt4_affine_ate_G1_precomputation {
-        mnt4_affine_ate_precompute_G1(P)
+    /// Double Miller loop.
+    ///
+    /// C++:
+    ///     mnt4_pp::double_miller_loop(...)
+    pub fn double_miller_loop(
+        prec_p1: &G1PrecompType,
+        prec_q1: &G2PrecompType,
+        prec_p2: &G1PrecompType,
+        prec_q2: &G2PrecompType,
+    ) -> Mnt4Fq4 {
+        mnt4_ate_double_miller_loop(prec_p1, prec_q1, prec_p2, prec_q2)
     }
 
-    fn affine_ate_precompute_G2(Q: &mnt4_G2) -> mnt4_affine_ate_G2_precomputation {
-        mnt4_affine_ate_precompute_G2(Q)
+    /// Pairing.
+    ///
+    /// C++:
+    ///     mnt4_pp::pairing(P, Q)
+    pub fn pairing(p: &G1Type, q: &G2Type) -> Mnt4Fq4 {
+        mnt4_pairing(p, q)
     }
 
-    fn affine_ate_miller_loop(
-        prec_P: &mnt4_affine_ate_G1_precomputation,
-        prec_Q: &mnt4_affine_ate_G2_precomputation,
-    ) -> mnt4_Fq4 {
-        mnt4_affine_ate_miller_loop(prec_P, prec_Q)
+    /// Reduced pairing.
+    ///
+    /// C++:
+    ///     mnt4_pp::reduced_pairing(P, Q)
+    pub fn reduced_pairing(p: &G1Type, q: &G2Type) -> Mnt4Fq4 {
+        mnt4_reduced_pairing(p, q)
     }
 
-    fn affine_ate_e_over_e_miller_loop(
-        prec_P1: &mnt4_affine_ate_G1_precomputation,
-        prec_Q1: &mnt4_affine_ate_G2_precomputation,
-        prec_P2: &mnt4_affine_ate_G1_precomputation,
-        prec_Q2: &mnt4_affine_ate_G2_precomputation,
-    ) -> mnt4_Fq4 {
-        mnt4_affine_ate_miller_loop(prec_P1, prec_Q1)
-            * mnt4_affine_ate_miller_loop(prec_P2, prec_Q2).unitary_inverse()
-    }
-
-    fn affine_ate_e_times_e_over_e_miller_loop(
-        prec_P1: &mnt4_affine_ate_G1_precomputation,
-        prec_Q1: &mnt4_affine_ate_G2_precomputation,
-        prec_P2: &mnt4_affine_ate_G1_precomputation,
-        prec_Q2: &mnt4_affine_ate_G2_precomputation,
-        prec_P3: &mnt4_affine_ate_G1_precomputation,
-        prec_Q3: &mnt4_affine_ate_G2_precomputation,
-    ) -> mnt4_Fq4 {
-        ((mnt4_affine_ate_miller_loop(prec_P1, prec_Q1)
-            * mnt4_affine_ate_miller_loop(prec_P2, prec_Q2))
-            * mnt4_affine_ate_miller_loop(prec_P3, prec_Q3).unitary_inverse())
-    }
-
-    fn double_miller_loop(
-        prec_P1: &mnt4_G1_precomp,
-        prec_Q1: &mnt4_G2_precomp,
-        prec_P2: &mnt4_G1_precomp,
-        prec_Q2: &mnt4_G2_precomp,
-    ) -> mnt4_Fq4 {
-        mnt4_double_miller_loop(prec_P1, prec_Q1, prec_P2, prec_Q2)
-    }
-
-    fn pairing(P: &mnt4_G1, Q: &mnt4_G2) -> mnt4_Fq4 {
-        mnt4_pairing(P, Q)
-    }
-
-    fn reduced_pairing(P: &mnt4_G1, Q: &mnt4_G2) -> mnt4_Fq4 {
-        mnt4_reduced_pairing(P, Q)
-    }
-
-    fn affine_reduced_pairing(P: &mnt4_G1, Q: &mnt4_G2) -> mnt4_Fq4 {
-        mnt4_affine_reduced_pairing(P, Q)
+    /// Ate Miller loop using precomputed affine Ate data.
+    ///
+    /// This is the low-level Ate Miller loop already exposed
+    /// by the current Rust pairing module.
+    pub fn ate_miller_loop(prec_p: &G1PrecompType, prec_q: &G2PrecompType) -> Mnt4Fq4 {
+        mnt4_ate_miller_loop(prec_p, prec_q)
     }
 }
+
+// use crate::algebra::curves::mnt::mnt4::mnt4_pp::Mnt4PP;
+
+// let params = Mnt4PP::init_public_params();
+
+// let p = Mnt4PP::precompute_g1(&g1);
+// let q = Mnt4PP::precompute_g2(&g2);
+
+// let miller = Mnt4PP::miller_loop(&p, &q);
+
+// let result = Mnt4PP::final_exponentiation(&miller);

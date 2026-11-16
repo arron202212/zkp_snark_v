@@ -1,93 +1,257 @@
-//  Declaration of interfaces for initializing MNT4.
+use std::sync::Arc;
 
-use crate::algebra::curves::mnt::mnt4::mnt4_fields::{
-    init_mnt4_fields, mnt4_Fq, mnt4_Fq2, mnt4_q_limbs,
-};
-use ffec::field_utils::bigint::bigint;
+use super::mnt4_fields::mnt4_fq_params;
+use super::mnt4_g1::Mnt4G1Params;
+use super::mnt4_g2::{Mnt4G2Params, mnt4_g2_params};
 
-pub const mnt4_twist: mnt4_Fq2 = mnt4_Fq2::const_default();
-pub const mnt4_twist_coeff_a: mnt4_Fq2 = mnt4_Fq2::const_default();
-pub const mnt4_twist_coeff_b: mnt4_Fq2 = mnt4_Fq2::const_default();
-pub const mnt4_twist_mul_by_a_c0: mnt4_Fq = mnt4_Fq::const_default();
-pub const mnt4_twist_mul_by_a_c1: mnt4_Fq = mnt4_Fq::const_default();
-pub const mnt4_twist_mul_by_b_c0: mnt4_Fq = mnt4_Fq::const_default();
-pub const mnt4_twist_mul_by_b_c1: mnt4_Fq = mnt4_Fq::const_default();
-pub const mnt4_twist_mul_by_q_X: mnt4_Fq = mnt4_Fq::const_default();
-pub const mnt4_twist_mul_by_q_Y: mnt4_Fq = mnt4_Fq::const_default();
-pub const mnt4_q_limbs4: usize = mnt4_q_limbs * 4;
-pub const mnt4_ate_loop_count: bigint<mnt4_q_limbs> = bigint::<mnt4_q_limbs>::zero();
-pub const mnt4_ate_is_loop_count_neg: bool = false;
-pub const mnt4_final_exponent: bigint<mnt4_q_limbs4> = bigint::<mnt4_q_limbs4>::zero();
-pub const mnt4_final_exponent_last_chunk_abs_of_w0: bigint<mnt4_q_limbs> =
-    bigint::<mnt4_q_limbs>::zero();
-pub const mnt4_final_exponent_last_chunk_is_w0_neg: bool = false;
-pub const mnt4_final_exponent_last_chunk_w1: bigint<mnt4_q_limbs> = bigint::<mnt4_q_limbs>::zero();
+// ============================================================
+// Pairing parameters
+// ============================================================
 
-pub fn init_mnt4_params() {
-    init_mnt4_fields();
+/// MNT4 Ate loop count.
+///
+/// libff:
+/// 689871209842287392837045615510547309923794944
+///
+/// Little-endian u64 limbs.
+pub const MNT4_ATE_LOOP_COUNT: [u64; 5] = [
+    0x0dc9_a1b6_7166_0000,
+    0x4660_9756_bec2_a33f,
+    0x0000_0000_001e_ef55,
+    0,
+    0,
+];
+
+/// libff:
+/// mnt4_ate_is_loop_count_neg = false
+pub const MNT4_ATE_IS_LOOP_COUNT_NEG: bool = false;
+
+/// MNT4 final exponent.
+///
+/// C++ type:
+/// bigint<4 * mnt4_q_limbs>
+///
+/// MNT4 q_limbs = 5, therefore 20 limbs.
+///
+/// The decimal value has 14 significant limbs.
+/// The remaining 6 limbs are zero.
+pub const MNT4_FINAL_EXPONENT: [u64; 20] = [
+    0xe7e6_9541_c598_0000,
+    0x065e_41b0_1242_2619,
+    0x36c7_a580_1f55_ac8e,
+    0xa570_04bb_9a1e_7a60,
+    0xb351_384d_8485_e987,
+    0x11ce_e431_be83_48de,
+    0x4e61_f58b_68ea_590b,
+    0x8507_4066_8186_8763,
+    0xba73_85b8_d20f_ea4e,
+    0x95e8_7dcb_6c97_234c,
+    0x42e0_0292_64c0_324a,
+    0x35ac_ca5a_07b2_394f,
+    0xefe2_16b3_7afb_6d30,
+    0x343c_7ac3_174c_87a1,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+];
+
+/// Absolute value of the last chunk w0.
+///
+/// libff:
+/// 689871209842287392837045615510547309923794945
+pub const MNT4_FINAL_EXPONENT_LAST_CHUNK_ABS_OF_W0: [u64; 5] = [
+    0x0dc9_a1b6_7166_0001,
+    0x4660_9756_bec2_a33f,
+    0x0000_0000_001e_ef55,
+    0,
+    0,
+];
+
+/// libff:
+/// mnt4_final_exponent_last_chunk_is_w0_neg = false
+pub const MNT4_FINAL_EXPONENT_LAST_CHUNK_IS_W0_NEG: bool = false;
+
+/// Last chunk w1 = 1.
+pub const MNT4_FINAL_EXPONENT_LAST_CHUNK_W1: [u64; 5] = [1, 0, 0, 0, 0];
+
+// ============================================================
+// Pairing parameter structure
+// ============================================================
+
+#[derive(Clone, Debug)]
+pub struct Mnt4PairingParams {
+    pub ate_loop_count: [u64; 5],
+
+    pub ate_is_loop_count_neg: bool,
+
+    pub final_exponent: [u64; 20],
+
+    pub final_exponent_last_chunk_abs_of_w0: [u64; 5],
+
+    pub final_exponent_last_chunk_is_w0_neg: bool,
+
+    pub final_exponent_last_chunk_w1: [u64; 5],
 }
 
-// use ark_ec::mnt4::MNT4Config;
-// use ark_ff::{BigInteger, Field, Fp2, PrimeField};
-// use ark_mnt4_298::{Fq, Fq2, Fr, G1Projective, G2Projective};
+impl Mnt4PairingParams {
+    pub fn new() -> Self {
+        Self {
+            ate_loop_count: MNT4_ATE_LOOP_COUNT,
 
-// pub struct Mnt4_298Config;
+            ate_is_loop_count_neg: MNT4_ATE_IS_LOOP_COUNT_NEG,
 
-// impl MNT4Config for Mnt4_298Config {
-//     type BaseField = Fq;
-//     type ScalarField = Fr;
+            final_exponent: MNT4_FINAL_EXPONENT,
 
-//     const COEFF_A: Fq = field_new!(Fq, "2");
-//     const COEFF_B: Fq = field_new!(
-//         Fq,
-//         "423894536526684178289416011533888240029318103673896002803341544124054745019340795360841685"
-//     );
+            final_exponent_last_chunk_abs_of_w0: MNT4_FINAL_EXPONENT_LAST_CHUNK_ABS_OF_W0,
 
-//     const G1_GENERATOR: G1Projective = G1Projective::new(
-//         field_new!(
-//             Fq,
-//             "60760244141852568949126569781626075788424196370144486719385562369396875346601926534016838"
-//         ),
-//         field_new!(
-//             Fq,
-//             "363732850702582978263902770815145784459747722357071843971107674179038674942891694705904306"
-//         ),
-//         Fq::ONE,
-//     );
+            final_exponent_last_chunk_is_w0_neg: MNT4_FINAL_EXPONENT_LAST_CHUNK_IS_W0_NEG,
 
-//     const G2_COEFF_A: Fq2 = Fq2::new(
-//         field_new!(Fq, "34"),
-//         Fq::ZERO,
-//     );
-// }
+            final_exponent_last_chunk_w1: MNT4_FINAL_EXPONENT_LAST_CHUNK_W1,
+        }
+    }
+}
 
-// pub const G1_WNAF_WINDOW_TABLE: [usize; 4] = [11, 24, 60, 127];
+impl Default for Mnt4PairingParams {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-// pub const G1_FIXED_BASE_WINDOW_TABLE: [usize; 22] = [
-//     1, 5, 10, 25, 60, 144, 345, 855, 1805, 3912, 11265, 27898, 57597, 145299, 157205, 601601,
-//     1107377, 1789647, 4392627, 8221211, 0, 42363731,
-// ];
+// ============================================================
+// Unified MNT4 parameters
+// ============================================================
 
-// pub const G2_GENERATOR: G2Projective = G2Projective::new(
-//     Fq2::new(
-//         field_new!(
-//             Fq,
-//             "438374926219350099854919100077809681842783509163790991847867546339851681564223481322252708"
-//         ),
-//         field_new!(
-//             Fq,
-//             "37620953615500480110935514360923278605464476459712393277679280819942849043649216370485641"
-//         ),
-//     ),
-//     Fq2::new(
-//         field_new!(
-//             Fq,
-//             "37437409008528968268352521034936931842973546441370663118543015118291998305624025037512482"
-//         ),
-//         field_new!(
-//             Fq,
-//             "424621479598893882672393190337420680597584695892317197646113820787463109735345923009077489"
-//         ),
-//     ),
-//     Fq2::ONE,
-// );
+/// Initialized MNT4 curve and pairing parameters.
+///
+/// This corresponds to the parameters initialized by:
+///
+/// libff::init_mnt4_params()
+pub struct Mnt4InitializedParams {
+    /// G1 curve parameters.
+    pub g1: Arc<Mnt4G1Params>,
+
+    /// G2 curve and twist parameters.
+    pub g2: Mnt4G2Params,
+
+    /// Pairing parameters.
+    pub pairing: Mnt4PairingParams,
+}
+
+// ============================================================
+// Initialization
+// ============================================================
+
+/// Initialize all MNT4 parameters.
+///
+/// Equivalent to libff:
+///
+/// void init_mnt4_params()
+///
+/// The field parameters are initialized through mnt4_fields,
+/// while G1 and G2 parameters are delegated to their own modules.
+pub fn init_mnt4_params() -> Mnt4InitializedParams {
+    // --------------------------------------------------------
+    // G1
+    // --------------------------------------------------------
+
+    let fq_params = mnt4_fq_params();
+
+    let g1 = Arc::new(Mnt4G1Params::new(fq_params));
+
+    // --------------------------------------------------------
+    // G2
+    // --------------------------------------------------------
+
+    // mnt4_g2_params() initializes:
+    //
+    // - twist
+    // - twist_coeff_a
+    // - twist_coeff_b
+    // - twist_mul_by_a_c0 / c1
+    // - twist_mul_by_b_c0 / c1
+    // - twist_mul_by_q_x / y
+    // - G2 cofactor
+    //
+    // These values should be defined in mnt4_g2.rs.
+    let g2 = mnt4_g2_params();
+
+    // --------------------------------------------------------
+    // Pairing
+    // --------------------------------------------------------
+
+    let pairing = Mnt4PairingParams::new();
+
+    Mnt4InitializedParams { g1, g2, pairing }
+}
+
+// ============================================================
+// Tests
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mnt4_ate_loop_count() {
+        let params = Mnt4PairingParams::new();
+
+        assert_eq!(
+            params.ate_loop_count,
+            [
+                0x0dc9_a1b6_7166_0000,
+                0x4660_9756_bec2_a33f,
+                0x0000_0000_001e_ef55,
+                0,
+                0,
+            ]
+        );
+
+        assert!(!params.ate_is_loop_count_neg);
+    }
+
+    #[test]
+    fn test_mnt4_final_exponent() {
+        let params = Mnt4PairingParams::new();
+
+        assert_eq!(params.final_exponent.len(), 20);
+
+        assert_eq!(params.final_exponent, MNT4_FINAL_EXPONENT);
+
+        assert_eq!(params.final_exponent[14..], [0, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn test_mnt4_final_exponent_last_chunk() {
+        let params = Mnt4PairingParams::new();
+
+        assert_eq!(
+            params.final_exponent_last_chunk_abs_of_w0,
+            [
+                0x0dc9_a1b6_7166_0001,
+                0x4660_9756_bec2_a33f,
+                0x0000_0000_001e_ef55,
+                0,
+                0,
+            ]
+        );
+
+        assert!(!params.final_exponent_last_chunk_is_w0_neg);
+
+        assert_eq!(params.final_exponent_last_chunk_w1, [1, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn test_mnt4_init_params() {
+        let params = init_mnt4_params();
+
+        assert_eq!(params.pairing.ate_loop_count, MNT4_ATE_LOOP_COUNT);
+
+        assert_eq!(params.pairing.final_exponent, MNT4_FINAL_EXPONENT);
+
+        assert_eq!(params.pairing.final_exponent_last_chunk_w1, [1, 0, 0, 0, 0]);
+    }
+}

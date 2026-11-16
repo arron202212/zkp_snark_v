@@ -1,189 +1,155 @@
-//  Declaration of interfaces for initializing MNT4.
+use crate::algebra::fields::prime_base::fp::Fp;
+use crate::algebra::fields::prime_base::fp_montgomery::FieldParams;
+use crate::algebra::fields::prime_extension::fp2::Fp2Params;
+use crate::algebra::fields::prime_extension::fp4::Fp4Params;
 
-use crate::algebra::curves::mnt::{
-    mnt4::mnt4_init::{mnt4_twist_mul_by_a_c0, mnt4_twist_mul_by_a_c1},
-    mnt46_common::{mnt46_A_bitcount, mnt46_A_limbs, mnt46_B_bitcount, mnt46_B_limbs},
-};
+/// MNT4-298 scalar field.
+pub type Mnt4Fr = Fp<5>;
 
-use ffec::{
-    field_utils::{
-        bigint::{GMP_NUMB_BITS, bigint},
-        field_utils::batch_invert,
-    },
-    {
-        Fp_model, Fp_modelConfig, Fp2_model, Fp2_modelConfig, Fp3_modelConfig, Fp4_model,
-        Fp4_modelConfig, Fp6_3over2_model, Fp6_modelConfig, Fp12_2over3over2_model,
-        Fp12_modelConfig, One, PpConfig, Zero,
-    },
-};
+/// MNT4-298 base field.
+pub type Mnt4Fq = Fp<5>;
 
-use std::{
-    borrow::Borrow,
-    ops::{Add, Mul, Neg, Sub},
-};
+/// MNT4-298 quadratic extension.
+pub type Mnt4Fq2 = crate::algebra::fields::prime_extension::fp2::Fp2<5>;
 
-pub const mnt4_r_bitcount: usize = mnt46_A_bitcount;
-pub const mnt4_q_bitcount: usize = mnt46_B_bitcount;
+/// MNT4-298 quartic extension.
+pub type Mnt4Fq4 = crate::algebra::fields::prime_extension::fp4::Fp4<5>;
 
-pub const mnt4_r_limbs: usize = mnt46_A_limbs;
-pub const mnt4_q_limbs: usize = mnt46_B_limbs;
-const mnt4_q_limbs2: usize = mnt4_q_limbs * 2;
-const mnt4_q_limbs3: usize = mnt4_q_limbs * 3;
-const mnt4_q_limbs4: usize = mnt4_q_limbs * 4;
-const mnt4_q_limbs6: usize = mnt4_q_limbs * 6;
-const mnt4_q_limbs12: usize = mnt4_q_limbs * 12;
-pub type mnt4_Fr = Fp_model<mnt4_r_limbs, Backend>;
-pub type mnt4_Fq = Fp_model<mnt4_q_limbs, Backend>;
-pub type mnt4_Fq2 = Fp2_model<mnt4_q_limbs, mnt4_q_limbs2, Backend>;
-pub type mnt4_Fq4 = Fp4_model<mnt4_q_limbs, mnt4_q_limbs2, mnt4_q_limbs4, Backend>;
-pub type mnt4_GT = mnt4_Fq4;
+/// MNT4 target group.
+pub type Mnt4GT = Mnt4Fq4;
 
-pub type mp_limb_t = u64;
-pub type bigint_r = bigint<mnt4_r_limbs>;
-pub type bigint_q = bigint<mnt4_q_limbs>;
+pub type Mnt4Fq4Params = Fp4Params<5>;
 
-#[derive(Default, Clone, Debug, Copy, PartialEq, Eq)]
-pub struct Backend;
+/// MNT4-298 scalar field modulus.
+///
+/// Decimal:
+/// 475922286169261325753349249653048451545124878552823515553267735739164647307408490559963137
+pub const MNT4_MODULUS_R: [u64; 5] = [
+    0xbb43_34a4_0000_0001,
+    0xfb49_4c07_925d_6ad3,
+    0xcaee_c963_5cf4_4194,
+    0xa266_249d_a7b0_548e,
+    0x0000_03bc_f7bc_d473,
+];
 
-impl<O: Borrow<Self>> Add<O> for Backend {
-    type Output = Backend;
+/// MNT4-298 base field modulus.
+///
+/// Decimal:
+/// 475922286169261325753349249653048451545124879242694725395555128576210262817955800483758081
+pub const MNT4_MODULUS_Q: [u64; 5] = [
+    0xc90c_d65a_7166_0001,
+    0x41a9_e35e_5120_0e12,
+    0xcaee_c963_5d13_30ea,
+    0xa266_249d_a7b0_548e,
+    0x0000_03bc_f7bc_d473,
+];
 
-    fn add(self, other: O) -> Self::Output {
-        let mut r = self;
-        // r += *other.borrow();
-        r
+/// Initialize MNT4 scalar field Fr.
+pub fn mnt4_fr_params() -> FieldParams<5> {
+    FieldParams::new(MNT4_MODULUS_R)
+}
+
+/// Initialize MNT4 base field Fq.
+pub fn mnt4_fq_params() -> FieldParams<5> {
+    FieldParams::new(MNT4_MODULUS_Q)
+}
+
+/// Convert canonical Fq limbs into a Montgomery Fq element.
+fn fq_from_words(words: [u64; 5], params: &FieldParams<5>) -> Mnt4Fq {
+    Mnt4Fq::new(words, params.clone())
+}
+
+/// Fq2 = Fq[u] / (u² - 17).
+///
+/// Frobenius:
+/// (a + bu)^q = a - bu
+pub fn mnt4_fq2_params() -> Fp2Params<5> {
+    let fq_params = mnt4_fq_params();
+
+    let non_residue = Mnt4Fq::from_u64(17, fq_params.clone());
+
+    let one = Mnt4Fq::one(fq_params.clone());
+    let minus_one = one.negate();
+
+    Fp2Params::new(fq_params, non_residue, [one, minus_one])
+}
+
+/// Fq4 Frobenius coefficients from libff mnt4_fields.cpp.
+///
+/// These are canonical integers, not Montgomery limbs.
+const MNT4_FQ4_FROBENIUS_C1: [[u64; 5]; 4] = [
+    [
+        0x0000_0000_0000_0001,
+        0x0000_0000_0000_0000,
+        0x0000_0000_0000_0000,
+        0x0000_0000_0000_0000,
+        0x0000_0000_0000_0000,
+    ],
+    [
+        0x94dd_5d7d_ef69_80c4,
+        0x8cd9_fae5_c1f7_bdcf,
+        0x8d53_4beb_17da_f751,
+        0x9916_dfdc_c2fd_1f96,
+        0x0000_000f_7377_9fe0,
+    ],
+    [
+        0xc90c_d65a_7166_0000,
+        0x41a9_e35e_5120_0e12,
+        0xcaee_c963_5d13_30ea,
+        0xa266_249d_a7b0_548e,
+        0x0000_03bc_f7bc_d473,
+    ],
+    [
+        0x342f_78dc_81fc_7f3d,
+        0xb4cf_e878_8f28_5043,
+        0x3d9b_7d78_4538_3998,
+        0x094f_44c0_e4b3_34f8,
+        0x0000_03ad_8445_3493,
+    ],
+];
+
+/// Build the four Fq4 Frobenius coefficients.
+fn mnt4_fq4_frobenius_coeffs(fq_params: &FieldParams<5>) -> [Mnt4Fq; 4] {
+    [
+        fq_from_words(MNT4_FQ4_FROBENIUS_C1[0], fq_params),
+        fq_from_words(MNT4_FQ4_FROBENIUS_C1[1], fq_params),
+        fq_from_words(MNT4_FQ4_FROBENIUS_C1[2], fq_params),
+        fq_from_words(MNT4_FQ4_FROBENIUS_C1[3], fq_params),
+    ]
+}
+
+/// Fq4 = Fq2[v] / (v² - u).
+///
+/// Fq2 = Fq[u] / (u² - 17).
+///
+/// Therefore:
+/// v² = u, u² = 17.
+pub fn mnt4_fq4_params() -> Mnt4Fq4Params {
+    let fq_params = mnt4_fq_params();
+    let fq2_params = mnt4_fq2_params();
+
+    // Corresponds to:
+    // mnt4_Fq4::non_residue = mnt4_Fq("17");
+    let non_residue = Mnt4Fq::from_u64(17, fq_params.clone());
+
+    let frobenius_coeffs_c1 = mnt4_fq4_frobenius_coeffs(&fq_params);
+
+    Mnt4Fq4Params::new(fq2_params, non_residue, frobenius_coeffs_c1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_mnt4_field_moduli() {
+        let fr = mnt4_fr_params();
+        let fq = mnt4_fq_params();
+
+        assert_eq!(fr.modulus[4], 0x0000_03bc_f7bc_d473);
+        assert_eq!(fq.modulus[4], 0x0000_03bc_f7bc_d473);
+
+        assert_eq!(fr.modulus, MNT4_MODULUS_R);
+
+        assert_eq!(fq.modulus, MNT4_MODULUS_Q);
     }
 }
-
-impl Sub for Backend {
-    type Output = Self;
-
-    fn sub(self, other: Self) -> Self::Output {
-        let mut r = self;
-        // r -= other;
-        r
-    }
-}
-
-impl<const N: usize> Mul<bigint<N>> for Backend {
-    type Output = Backend;
-
-    fn mul(self, rhs: bigint<N>) -> Self::Output {
-        let mut r = self;
-        // r *= *rhs.borrow();
-        r
-    }
-}
-
-impl<const N: usize, T: Fp_modelConfig<N>> Mul<Fp_model<N, T>> for Backend {
-    type Output = Backend;
-
-    fn mul(self, rhs: Fp_model<N, T>) -> Self::Output {
-        let mut r = self;
-        // r *= *rhs.borrow();
-        r
-    }
-}
-
-impl<O: Borrow<Self>> Mul<O> for Backend {
-    type Output = Backend;
-
-    fn mul(self, rhs: O) -> Self::Output {
-        let mut r = self;
-        // r *= *rhs.borrow();
-        r
-    }
-}
-
-impl Neg for Backend {
-    type Output = Self;
-
-    fn neg(self) -> Self::Output {
-        self
-    }
-}
-
-use std::fmt;
-impl fmt::Display for Backend {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", Self::one())
-    }
-}
-
-impl One for Backend {
-    fn one() -> Self {
-        Self::one()
-    }
-}
-
-impl Zero for Backend {
-    fn zero() -> Self {
-        Self::zero()
-    }
-    fn is_zero(&self) -> bool {
-        false
-    }
-}
-
-impl PpConfig for Backend {
-    type BigIntT = bigint<1>;
-}
-impl Fp_modelConfig<mnt4_q_limbs> for Backend {}
-impl Fp2_modelConfig<mnt4_q_limbs, mnt4_q_limbs2> for Backend {
-    type Fp_modelConfig = Self;
-}
-impl Fp3_modelConfig<mnt4_q_limbs, mnt4_q_limbs3> for Backend {
-    type Fp_modelConfig = Self;
-}
-impl Fp4_modelConfig<mnt4_q_limbs, mnt4_q_limbs2, mnt4_q_limbs4> for Backend {
-    type Fp2_modelConfig = Self;
-}
-impl Fp6_modelConfig<mnt4_q_limbs, mnt4_q_limbs2, mnt4_q_limbs6> for Backend {
-    type Fp_modelConfig = Self;
-    type Fp2_modelConfig = Self;
-}
-impl Fp12_modelConfig<mnt4_q_limbs, mnt4_q_limbs2, mnt4_q_limbs6, mnt4_q_limbs12> for Backend {
-    type Fp_modelConfig = Self;
-    type Fp6_modelConfig = Self;
-}
-
-pub fn init_mnt4_fields() {}
-
-// use ark_ff::{BigInteger, MontConfig, field_new, Fp2, Fp2Config, Fp4, Fp4Config};
-
-// pub struct FrConfig;
-// impl MontConfig<5> for FrConfig {
-
-//     const MODULUS: BigInt<5> = field_new!(Fr, "475922286169261325753349249653048451545124878552823515553267735739164647307408490559963137");
-
-//     const INVERSE: u64 = 0xbb4334a3ffffffff;
-
-//     const TWO_ADICITY: u32 = 34;
-//     const GENERATOR: BigInt<5> = field_new!(Fr, "10");
-// }
-
-// pub struct FqConfig;
-// impl MontConfig<5> for FqConfig {
-//     const MODULUS: BigInt<5> = field_new!(Fq, "475922286169261325753349249653048451545124879242694725395555128576210262817955800483758081");
-//     const INVERSE: u64 = 0xb071a1b67165ffff;
-
-//     const TWO_ADICITY: u32 = 17;
-// }
-
-// pub struct Fq2Config;
-// impl Fp2Config for Fq2Config {
-//     type Fp = Fq;
-//     const NONRESIDUE: Fq = field_new!(Fq, "17");
-
-//     const FROBENIUS_COEFF_C1: [Fq; 2] = [
-//         field_new!(Fq, "1"),
-//         field_new!(Fq, "475922286169261325753349249653048451545124879242694725395555128576210262817955800483758080"),
-//     ];
-// }
-
-// pub type Fq4 = Fp4<Fq4Config>;
-// pub struct Fq4Config;
-// impl Fp4Config for Fq4Config {
-//     type Fp2Config = Fq2Config;
-//     const NONRESIDUE: Fq2 = Fq2::new(field_new!(Fq, "17"), Fq::ZERO);
-// }

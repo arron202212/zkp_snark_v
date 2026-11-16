@@ -1,166 +1,519 @@
-//  Declaration of interfaces for the MNT4 G2 group.
+use crate::algebra::fields::prime_base::fp::Fp;
+use crate::algebra::fields::prime_base::fp_montgomery::FieldParams;
+use crate::algebra::fields::prime_extension::fp2::{Fp2, Fp2Params};
 
-use crate::{
-    algebra::curves::mnt::mnt4::{
-        mnt4_fields::{mnt4_Fq, mnt4_Fq2, mnt4_Fr},
-        mnt4_init::{
-            mnt4_twist_coeff_a, mnt4_twist_coeff_b, mnt4_twist_mul_by_a_c0, mnt4_twist_mul_by_a_c1,
-            mnt4_twist_mul_by_b_c0, mnt4_twist_mul_by_b_c1, mnt4_twist_mul_by_q_X,
-            mnt4_twist_mul_by_q_Y,
-        },
-    },
-    {FpmConfig, Fq2mConfig},
-};
+pub type Mnt4Fq = Fp<5>;
+pub type Mnt4Fq2 = Fp2<5>;
 
-use ffec::{
-    field_utils::{
-        BigInt,
-        bigint::{GMP_NUMB_BITS, bigint},
-        field_utils::batch_invert,
-    },
-    {BigInt, Fp_model, Fp_modelConfig, One, PpConfig, Zero},
-};
-use num_bigint::BigUint;
-use std::{
-    borrow::Borrow,
-    fmt::Debug,
-    ops::{Add, AddAssign, BitXor, BitXorAssign, Mul, MulAssign, Neg, Sub, SubAssign},
-};
+/// MNT4 G2 parameters.
+#[derive(Clone, Debug)]
+pub struct Mnt4G2Params {
+    pub fq_params: FieldParams<5>,
+    pub fq2_params: Fp2Params<5>,
 
-type base_field = mnt4_Fq;
-type twist_field = mnt4_Fq2;
-type scalar_field = mnt4_Fr;
+    /// Twist curve coefficient a.
+    ///
+    /// twist_a = (34, 0)
+    pub twist_coeff_a: Mnt4Fq2,
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct mnt4_G2 {
-    pub X: mnt4_Fq2,
-    pub Y: mnt4_Fq2,
-    pub Z: mnt4_Fq2,
+    /// Twist curve coefficient b.
+    ///
+    /// twist_b = (0, 17 * curve_b)
+    pub twist_coeff_b: Mnt4Fq2,
+
+    /// Optimized multiplication by twist coefficient a.
+    pub twist_mul_by_a_c0: Mnt4Fq,
+    pub twist_mul_by_a_c1: Mnt4Fq,
+
+    /// Optimized multiplication by twist coefficient b.
+    pub twist_mul_by_b_c0: Mnt4Fq,
+    pub twist_mul_by_b_c1: Mnt4Fq,
+
+    /// Frobenius multiplication coefficients.
+    pub twist_mul_by_q_x: Mnt4Fq,
+    pub twist_mul_by_q_y: Mnt4Fq,
+
+    /// G2 cofactor.
+    pub cofactor: [u64; 5],
 }
-impl PpConfig for mnt4_G2 {
-    type BigIntT = bigint<1>;
+
+/// MNT4 G2 point.
+///
+/// Uses ordinary projective coordinates:
+///  ```text
+///     x = X / Z
+///     y = Y / Z
+///  ```
+/// This is NOT Jacobian representation.
+#[derive(Clone, Debug)]
+pub struct Mnt4G2 {
+    pub x: Mnt4Fq2,
+    pub y: Mnt4Fq2,
+    pub z: Mnt4Fq2,
+
+    pub params: Mnt4G2Params,
 }
-impl FpmConfig for mnt4_G2 {
-    type Fr = mnt4_Fq;
-}
-impl Fq2mConfig for mnt4_G2 {
-    type Fr = Self;
-}
-impl mnt4_G2 {
-    // Cofactor
-    const h_bitcount: usize = 298;
-    const h_limbs: usize = (Self::h_bitcount + GMP_NUMB_BITS - 1) / GMP_NUMB_BITS;
-    const h: bigint<{ Self::h_limbs }> = bigint::<{ Self::h_limbs }>(BigInt!("1"));
-    pub fn new(X: mnt4_Fq2, Y: mnt4_Fq2, Z: mnt4_Fq2) -> Self {
-        Self { X, Y, Z }
-    }
-    pub fn size_in_bits() -> usize {
-        return base_field::ceil_size_in_bits() + 1;
-    }
-    pub fn field_char() -> bigint<{ base_field::num_limbs }> {
-        return base_field::field_char();
-    }
-    pub fn order() -> bigint<{ scalar_field::num_limbs }> {
-        return scalar_field::field_char();
+
+impl PartialEq for Mnt4G2 {
+    fn eq(&self, other: &Self) -> bool {
+        self.equals(other)
     }
 }
 
-impl Default for mnt4_G2 {
-    fn default() -> Self {
-        Self::G2_zero()
+impl Eq for Mnt4G2 {}
+
+// ============================================================================
+// Field constants
+// ============================================================================
+
+/// Construct a canonical Fq element from five little-endian limbs.
+fn fq(value: [u64; 5], params: &FieldParams<5>) -> Mnt4Fq {
+    Mnt4Fq::new(value, params.clone())
+}
+
+/// Construct an Fq2 element from two canonical Fq components.
+fn fq2(c0: [u64; 5], c1: [u64; 5], params: &Fp2Params<5>) -> Mnt4Fq2 {
+    Mnt4Fq2::new(
+        fq(c0, &params.fp_params),
+        fq(c1, &params.fp_params),
+        params.clone(),
+    )
+}
+
+fn fq_zero(params: &FieldParams<5>) -> Mnt4Fq {
+    Mnt4Fq::zero(params.clone())
+}
+
+fn fq_one(params: &FieldParams<5>) -> Mnt4Fq {
+    Mnt4Fq::one(params.clone())
+}
+
+fn fq2_zero(params: &Fp2Params<5>) -> Mnt4Fq2 {
+    Mnt4Fq2::zero(params.clone())
+}
+
+fn fq2_one(params: &Fp2Params<5>) -> Mnt4Fq2 {
+    Mnt4Fq2::one(params.clone())
+}
+
+// ============================================================================
+// MNT4 G2 initialization
+// ============================================================================
+
+/// MNT4 base-field modulus.
+///
+/// Decimal:
+///
+/// 475922286169261325753349249653048451545124879242694725395555128576210262817955800483758081
+pub fn mnt4_fq_params() -> FieldParams<5> {
+    FieldParams::new([
+        0xc90c_d65a_7166_0001,
+        0x41a9_e35e_5120_0e12,
+        0xcaee_c963_5d13_30ea,
+        0xa266_249d_a7b0_548e,
+        0x0000_03bc_f7bc_d473,
+    ])
+}
+
+/// MNT4 Fq2 parameters.
+///
+/// Fq2 = Fq[u] / (u^2 - 17)
+///
+/// Frobenius:
+///
+/// (a + bu)^q = a - bu
+pub fn mnt4_fq2_params() -> Fp2Params<5> {
+    let fq_params = mnt4_fq_params();
+
+    let non_residue = Mnt4Fq::from_u64(17, fq_params.clone());
+
+    let one = fq_one(&fq_params);
+    let minus_one = one.negate();
+
+    Fp2Params::new(fq_params, non_residue, [one, minus_one])
+}
+
+/// Initialize MNT4 G2 parameters.
+pub fn mnt4_g2_params() -> Mnt4G2Params {
+    let fq_params = mnt4_fq_params();
+    let fq2_params = mnt4_fq2_params();
+
+    let zero = fq_zero(&fq_params);
+
+    // ------------------------------------------------------------------------
+    // Twist coefficient a
+    //
+    // twist_a = (34, 0)
+    // ------------------------------------------------------------------------
+
+    let twist_coeff_a = Mnt4Fq2::new(
+        Mnt4Fq::from_u64(34, fq_params.clone()),
+        zero.clone(),
+        fq2_params.clone(),
+    );
+
+    // ------------------------------------------------------------------------
+    // Twist coefficient b
+    //
+    // twist_b = (0, 17 * curve_b)
+    //
+    // 17 * curve_b mod q
+    // ------------------------------------------------------------------------
+
+    let twist_coeff_b = fq2(
+        [
+            0x0000_0000_0000_0000,
+            0x0000_0000_0000_0000,
+            0x0000_0000_0000_0000,
+            0x0000_0000_0000_0000,
+            0x0000_0000_0000_0000,
+        ],
+        [
+            0x6a3b_6efb_12b3_0d16,
+            0x5c24_b1b1_a912_ec4d,
+            0x1ecd_2ff0_038a_b06a,
+            0xe6e2_23b5_5400_63ee,
+            0x0000_0087_788d_2a0e,
+        ],
+        &fq2_params,
+    );
+
+    // ------------------------------------------------------------------------
+    // Optimized multiplication constants.
+    //
+    // mul_by_a(elt):
+    //   (34 * elt.c0, 34 * elt.c1)
+    //
+    // mul_by_b(elt):
+    //   (b_c0 * elt.c1, b_c1 * elt.c0)
+    // ------------------------------------------------------------------------
+
+    let twist_mul_by_a_c0 = Mnt4Fq::from_u64(34, fq_params.clone());
+
+    let twist_mul_by_a_c1 = Mnt4Fq::from_u64(34, fq_params.clone());
+
+    // curve_b * 17^2 mod q
+    let twist_mul_by_b_c0 = fq(
+        [
+            0x7bd8_b1f7_5b17_de74,
+            0x9b1c_060f_9801_94fe,
+            0x75c2_9c29_820f_553b,
+            0x1038_15cf_44a5_f9b2,
+            0x0000_0185_11e6_2216,
+        ],
+        &fq_params,
+    );
+
+    // curve_b * 17 mod q
+    let twist_mul_by_b_c1 = fq(
+        [
+            0x6a3b_6efb_12b3_0d16,
+            0x5c24_b1b1_a912_ec4d,
+            0x1ecd_2ff0_038a_b06a,
+            0xe6e2_23b5_5400_63ee,
+            0x0000_0087_788d_2a0e,
+        ],
+        &fq_params,
+    );
+
+    // ------------------------------------------------------------------------
+    // Frobenius multiplication constants.
+    // ------------------------------------------------------------------------
+
+    // q - 1
+    let twist_mul_by_q_x = fq(
+        [
+            0xc90c_d65a_7166_0000,
+            0x41a9_e35e_5120_0e12,
+            0xcaee_c963_5d13_30ea,
+            0xa266_249d_a7b0_548e,
+            0x0000_03bc_f7bc_d473,
+        ],
+        &fq_params,
+    );
+
+    let twist_mul_by_q_y = fq(
+        [
+            0x94dd_5d7d_ef69_80c4,
+            0x8cd9_fae5_c1f7_bdcf,
+            0x8d53_4beb_17da_f751,
+            0x9916_dfdc_c2fd_1f96,
+            0x0000_000f_7377_9fe0,
+        ],
+        &fq_params,
+    );
+
+    // ------------------------------------------------------------------------
+    // G2 cofactor.
+    // ------------------------------------------------------------------------
+
+    let cofactor = [
+        0xd6d6_7810_e2cc_0001,
+        0x880a_7ab5_0fe2_b151,
+        0xcaee_c963_5d32_203f,
+        0xa266_249d_a7b0_548e,
+        0x0000_03bc_f7bc_d473,
+    ];
+
+    Mnt4G2Params {
+        fq_params,
+        fq2_params,
+        twist_coeff_a,
+        twist_coeff_b,
+        twist_mul_by_a_c0,
+        twist_mul_by_a_c1,
+        twist_mul_by_b_c0,
+        twist_mul_by_b_c1,
+        twist_mul_by_q_x,
+        twist_mul_by_q_y,
+        cofactor,
     }
 }
 
-impl mnt4_G2 {
-    pub fn mul_by_a(elt: &mnt4_Fq2) -> mnt4_Fq2 {
-        return mnt4_Fq2::new(
-            mnt4_twist_mul_by_a_c0 * elt.c0,
-            mnt4_twist_mul_by_a_c1 * elt.c1,
+// ============================================================================
+// G2 implementation
+// ============================================================================
+
+impl Mnt4G2 {
+    pub fn new(x: Mnt4Fq2, y: Mnt4Fq2, z: Mnt4Fq2, params: Mnt4G2Params) -> Self {
+        Self { x, y, z, params }
+    }
+
+    /// Point at infinity.
+    ///
+    /// Canonical representation:
+    ///
+    /// (0, 1, 0)
+    pub fn zero(params: Mnt4G2Params) -> Self {
+        let x = fq2_zero(&params.fq2_params);
+        let y = fq2_one(&params.fq2_params);
+        let z = fq2_zero(&params.fq2_params);
+
+        Self::new(x, y, z, params)
+    }
+
+    /// Generator.
+    pub fn one(params: Mnt4G2Params) -> Self {
+        let x = fq2(
+            [
+                0xba79_03df_6c09_a9a4,
+                0x2cb1_4f01_a931_e72d,
+                0x9001_f205_151e_12a7,
+                0x6605_71ff_542f_2ef8,
+                0x0000_0371_7804_91c5,
+            ],
+            [
+                0x968b_e32c_0ae0_a989,
+                0x0330_2bb6_c02c_712c,
+                0x697c_851f_002f_5763,
+                0xda16_5def_8380_81af,
+                0x0000_004b_a59a_3f72,
+            ],
+            &params.fq2_params,
         );
-    }
 
-    pub fn mul_by_b(elt: &mnt4_Fq2) -> mnt4_Fq2 {
-        return mnt4_Fq2::new(
-            mnt4_twist_mul_by_b_c0 * elt.c1,
-            mnt4_twist_mul_by_b_c1 * elt.c0,
+        let y = fq2(
+            [
+                0x0d95_22bc_a4e7_9f22,
+                0xec98_f0f6_10a5_aafd,
+                0xd31e_5c4b_3b2e_0b60,
+                0xaad8_68a1_c47d_6605,
+                0x0000_004b_471f_33ff,
+            ],
+            [
+                0x84fb_61a3_cbf0_e0f1,
+                0x3b51_68ed_8d75_c7c4,
+                0xcb7d_982f_78ec_9cfc,
+                0xa503_1f3f_81a5_c100,
+                0x0000_0355_d05a_1c69,
+            ],
+            &params.fq2_params,
         );
+
+        let z = fq2_one(&params.fq2_params);
+
+        Self::new(x, y, z, params)
     }
 
-    pub fn G2_zero() -> Self {
-        Self {
-            X: Default::default(),
-            Y: Default::default(),
-            Z: Default::default(),
-        }
-    }
-    pub fn G2_one() -> Self {
-        Self {
-            X: Default::default(),
-            Y: Default::default(),
-            Z: Default::default(),
-        }
-    }
-    pub fn print(&self) {
-        if self.is_zero() {
-            print!("O\n");
-        } else {
-            let mut copy = self.clone();
-            copy.to_affine_coordinates();
-            print!(
-                "({:N$}*z + {:N$} , {:N$}*z + {:N$})\n",
-                copy.X.c1.as_bigint().0.0[0],
-                copy.X.c0.as_bigint().0.0[0],
-                copy.Y.c1.as_bigint().0.0[0],
-                copy.Y.c0.as_bigint().0.0[0],
-                N = mnt4_Fq::num_limbs
-            );
-        }
-    }
-
-    pub fn print_coordinates(&self) {
-        if self.is_zero() {
-            print!("O\n");
-        } else {
-            print!(
-                "({:N$}*z + {:N$} : {:N$}*z + {:N$} : {:N$}*z + {:N$})\n",
-                self.X.c1.as_bigint().0.0[0],
-                self.X.c0.as_bigint().0.0[0],
-                self.Y.c1.as_bigint().0.0[0],
-                self.Y.c0.as_bigint().0.0[0],
-                self.Z.c1.as_bigint().0.0[0],
-                self.Z.c0.as_bigint().0.0[0],
-                N = mnt4_Fq::num_limbs
-            );
-        }
-    }
-
-    pub fn to_affine_coordinates(&mut self) {
-        if self.is_zero() {
-            self.X = mnt4_Fq2::zero();
-            self.Y = mnt4_Fq2::one();
-            self.Z = mnt4_Fq2::zero();
-        } else {
-            let Z_inv = self.Z.inverse();
-            self.X = self.X * Z_inv;
-            self.Y = self.Y * Z_inv;
-            self.Z = mnt4_Fq2::one();
-        }
-    }
-
-    pub fn to_special(&mut self) {
-        self.to_affine_coordinates();
-    }
-
-    pub fn is_special(&self) -> bool {
-        return (self.is_zero() || self.Z == mnt4_Fq2::one());
+    pub fn generator() -> Self {
+        Self::one(mnt4_g2_params())
     }
 
     pub fn is_zero(&self) -> bool {
-        return (self.X.is_zero() && self.Z.is_zero());
+        self.x.is_zero() && self.z.is_zero()
     }
 
-    pub fn add(&self, other: &mnt4_G2) -> mnt4_G2 {
-        // handle special cases having to do with O
+    pub fn is_special(&self) -> bool {
+        self.is_zero() || self.z.is_one()
+    }
+
+    /// Convert to affine coordinates.
+    ///```text
+    /// x = X/Z
+    /// y = Y/Z
+    ///```
+    pub fn to_affine(&mut self) {
+        if self.is_zero() {
+            self.x = fq2_zero(&self.params.fq2_params);
+            self.y = fq2_one(&self.params.fq2_params);
+            self.z = fq2_zero(&self.params.fq2_params);
+            return;
+        }
+
+        if self.z.is_one() {
+            return;
+        }
+
+        let z_inv = self
+            .z
+            .inverse()
+            .expect("nonzero projective Z must be invertible");
+
+        self.x = self.x.mul(&z_inv);
+        self.y = self.y.mul(&z_inv);
+        self.z = fq2_one(&self.params.fq2_params);
+    }
+
+    pub fn to_affine_element(&self) -> Self {
+        let mut result = self.clone();
+        result.to_affine();
+        result
+    }
+
+    /// Compare projective points.
+    ///
+    /// X1/Z1 == X2/Z2
+    /// Y1/Z1 == Y2/Z2
+    pub fn equals(&self, other: &Self) -> bool {
+        if self.is_zero() {
+            return other.is_zero();
+        }
+
+        if other.is_zero() {
+            return false;
+        }
+
+        let x1z2 = self.x.mul(&other.z);
+        let x2z1 = other.x.mul(&self.z);
+
+        if x1z2 != x2z1 {
+            return false;
+        }
+
+        let y1z2 = self.y.mul(&other.z);
+        let y2z1 = other.y.mul(&self.z);
+
+        y1z2 == y2z1
+    }
+
+    // ------------------------------------------------------------------------
+    // Optimized multiplication by twist coefficients
+    // ------------------------------------------------------------------------
+
+    /// Multiply an Fq2 element by twist coefficient a.
+    ///
+    /// (a0, a1) -> (34*a0, 34*a1)
+    pub fn mul_by_a(&self, elt: &Mnt4Fq2) -> Mnt4Fq2 {
+        Mnt4Fq2::new(
+            elt.c0.mul(&self.params.twist_mul_by_a_c0),
+            elt.c1.mul(&self.params.twist_mul_by_a_c1),
+            self.params.fq2_params.clone(),
+        )
+    }
+
+    /// Multiply an Fq2 element by twist coefficient b.
+    ///
+    /// (a0, a1) -> (b_c0*a1, b_c1*a0)
+    pub fn mul_by_b(&self, elt: &Mnt4Fq2) -> Mnt4Fq2 {
+        Mnt4Fq2::new(
+            self.params.twist_mul_by_b_c0.mul(&elt.c1),
+            self.params.twist_mul_by_b_c1.mul(&elt.c0),
+            self.params.fq2_params.clone(),
+        )
+    }
+
+    // ------------------------------------------------------------------------
+    // Negation
+    // ------------------------------------------------------------------------
+
+    pub fn negate(&self) -> Self {
+        if self.is_zero() {
+            return Self::zero(self.params.clone());
+        }
+
+        Self::new(
+            self.x.clone(),
+            self.y.negate(),
+            self.z.clone(),
+            self.params.clone(),
+        )
+    }
+
+    // ------------------------------------------------------------------------
+    // Doubling
+    // ------------------------------------------------------------------------
+
+    /// Point doubling.
+    ///
+    /// This follows libff's ordinary-projective doubling formula.
+    pub fn double(&self) -> Self {
+        if self.is_zero() || self.y.is_zero() {
+            return Self::zero(self.params.clone());
+        }
+
+        let xx = self.x.square();
+        let zz = self.z.square();
+
+        // w = a*Z^2 + 3*X^2
+        let three = Mnt4Fq2::from_u64(3, self.params.fq2_params.clone());
+
+        let w = self
+            .mul_by_a(&zz)
+            .add(&xx.mul_by_fp(&Mnt4Fq::from_u64(3, self.params.fq_params.clone())));
+
+        // s = 2*Y*Z
+        let two = Mnt4Fq2::from_u64(2, self.params.fq2_params.clone());
+
+        let s = self.y.mul(&self.z).mul(&two);
+        let ss = s.square();
+        let sss = s.mul(&ss);
+
+        // R = Y*s
+        let r = self.y.mul(&s);
+        let rr = r.square();
+
+        // B = (X+R)^2 - XX - RR
+        let b = self.x.add(&r).square().sub(&xx).sub(&rr);
+
+        // h = w^2 - 2*B
+        let h = w.square().sub(&b.mul(&two));
+
+        // X3 = h*s
+        let x3 = h.mul(&s);
+
+        // Y3 = w*(B-h) - 2*RR
+        let y3 = w.mul(&b.sub(&h)).sub(&rr.mul(&two));
+
+        // Z3 = s^3
+        let z3 = sss;
+
+        let _ = three;
+
+        Self::new(x3, y3, z3, self.params.clone())
+    }
+
+    pub fn dbl(&self) -> Self {
+        self.double()
+    }
+
+    // ------------------------------------------------------------------------
+    // Addition
+    // ------------------------------------------------------------------------
+
+    /// Complete ordinary-projective addition.
+    ///
+    /// Formula follows mnt4_g2.cpp.
+    pub fn add(&self, other: &Self) -> Self {
         if self.is_zero() {
             return other.clone();
         }
@@ -169,45 +522,53 @@ impl mnt4_G2 {
             return self.clone();
         }
 
-        // no need to handle points of order 2,4
-        // (they cannot exist in a prime-order subgroup)
-
-        // handle double case
-        if self == (other) {
-            return self.dbl();
+        if self.equals(other) {
+            return self.double();
         }
 
-        // #ifdef PROFILE_OP_COUNTS
-        // self.add_cnt+=1;
+        // Same affine x and opposite affine y.
+        //
+        // Avoid the degenerate all-zero output of the generic formula.
+        if self.x.mul(&other.z) == other.x.mul(&self.z)
+            && self.y.mul(&other.z) == other.y.negate().mul(&self.z)
+        {
+            return Self::zero(self.params.clone());
+        }
 
-        // NOTE: does not handle O and pts of order 2,4
-        // http://www.hyperelliptic.org/EFD/g1p/auto-shortw-projective.html#addition-add-1998-cmo-2
+        let y1z2 = self.y.mul(&other.z);
+        let x1z2 = self.x.mul(&other.z);
+        let z1z2 = self.z.mul(&other.z);
 
-        let Y1Z2 = (self.Y) * (other.Z); // Y1Z2 = Y1*Z2
-        let X1Z2 = (self.X) * (other.Z); // X1Z2 = X1*Z2
-        let Z1Z2 = (self.Z) * (other.Z); // Z1Z2 = Z1*Z2
-        let u = (other.Y) * (self.Z) - Y1Z2; // u    = Y2*Z1-Y1Z2
-        let uu = u.squared(); // uu   = u^2
-        let v = (other.X) * (self.Z) - X1Z2; // v    = X2*Z1-X1Z2
-        let vv = v.squared(); // vv   = v^2
-        let vvv = v * vv; // vvv  = v*vv
-        let R = vv * X1Z2; // R    = vv*X1Z2
-        let A = uu * Z1Z2 - (vvv + R + R); // A    = uu*Z1Z2 - vvv - 2*R
-        let X3 = v * A; // X3   = v*A
-        let Y3 = u * (R - A) - vvv * Y1Z2; // Y3   = u*(R-A) - vvv*Y1Z2
-        let Z3 = vvv * Z1Z2; // Z3   = vvv*Z1Z2
+        let u = other.y.mul(&self.z).sub(&y1z2);
+        let uu = u.square();
 
-        return mnt4_G2::new(X3, Y3, Z3);
+        let v = other.x.mul(&self.z).sub(&x1z2);
+        let vv = v.square();
+
+        let vvv = v.mul(&vv);
+        let r = vv.mul(&x1z2);
+
+        let two = Mnt4Fq2::from_u64(2, self.params.fq2_params.clone());
+
+        let a = uu.mul(&z1z2).sub(&vvv).sub(&r.mul(&two));
+
+        let x3 = v.mul(&a);
+
+        let y3 = u.mul(&r.sub(&a)).sub(&vvv.mul(&y1z2));
+
+        let z3 = vvv.mul(&z1z2);
+
+        Self::new(x3, y3, z3, self.params.clone())
     }
 
-    pub fn mixed_add(&self, other: &mnt4_G2) -> mnt4_G2 {
-        // #ifdef PROFILE_OP_COUNTS
-        // self.add_cnt+=1;
+    // ------------------------------------------------------------------------
+    // Mixed addition
+    // ------------------------------------------------------------------------
 
-        // NOTE: does not handle O and pts of order 2,4
-        // http://www.hyperelliptic.org/EFD/g1p/auto-shortw-projective.html#addition-add-1998-cmo-2
-        //assert!(other.Z == mnt4_Fq2::one());
-
+    /// Mixed addition.
+    ///
+    /// The second point must be affine (Z = 1), or infinity.
+    pub fn mixed_add(&self, other: &Self) -> Self {
         if self.is_zero() {
             return other.clone();
         }
@@ -216,526 +577,224 @@ impl mnt4_G2 {
             return self.clone();
         }
 
-        // #ifdef DEBUG
-        assert!(other.is_special());
-
-        let X1Z2: mnt4_Fq2 = (self.X); // X1Z2 = X1*Z2 (but other is special and not zero)
-        let X2Z1 = (self.Z) * (other.X); // X2Z1 = X2*Z1
-
-        // (used both in add and double checks)
-
-        let Y1Z2: mnt4_Fq2 = (self.Y); // Y1Z2 = Y1*Z2 (but other is special and not zero)
-        let Y2Z1 = (self.Z) * (other.Y); // Y2Z1 = Y2*Z1
-
-        if X1Z2 == X2Z1 && Y1Z2 == Y2Z1 {
-            return self.dbl();
-        }
-
-        let u = Y2Z1 - self.Y; // u = Y2*Z1-Y1
-        let uu = u.squared(); // uu = u2
-        let v = X2Z1 - self.X; // v = X2*Z1-X1
-        let vv = v.squared(); // vv = v2
-        let vvv = v * vv; // vvv = v*vv
-        let R = vv * self.X; // R = vv*X1
-        let A = uu * self.Z - vvv - R - R; // A = uu*Z1-vvv-2*R
-        let X3 = v * A; // X3 = v*A
-        let Y3 = u * (R - A) - vvv * self.Y; // Y3 = u*(R-A)-vvv*Y1
-        let Z3 = vvv * self.Z; // Z3 = vvv*Z1
-
-        return mnt4_G2::new(X3, Y3, Z3);
-    }
-
-    pub fn dbl(&self) -> mnt4_G2 {
-        // #ifdef PROFILE_OP_COUNTS
-        // self.dbl_cnt+=1;
-
-        if self.is_zero() {
-            return self.clone();
-        }
-        // NOTE: does not handle O and pts of order 2,4
-        // http://www.hyperelliptic.org/EFD/g1p/auto-shortw-projective.html#doubling-dbl-2007-bl
-
-        let XX = (self.X).squared(); // XX  = X1^2
-        let ZZ = (self.Z).squared(); // ZZ  = Z1^2
-        let w = mnt4_G2::mul_by_a(&ZZ) + (XX + XX + XX); // w   = a*ZZ + 3*XX
-        let Y1Z1 = (self.Y) * (self.Z);
-        let s = Y1Z1 + Y1Z1; // s   = 2*Y1*Z1
-        let ss = s.squared(); // ss  = s^2
-        let sss = s * ss; // sss = s*ss
-        let R = (self.Y) * s; // R   = Y1*s
-        let RR = R.squared(); // RR  = R^2
-        let B = ((self.X) + R).squared() - XX - RR; // B   = (X1+R)^2 - XX - RR
-        let h = w.squared() - (B + B); // h   = w^2-2*B
-        let X3 = h * s; // X3  = h*s
-        let Y3 = w * (B - h) - (RR + RR); // Y3  = w*(B-h) - 2*RR
-        let Z3 = sss; // Z3  = sss
-
-        return mnt4_G2::new(X3, Y3, Z3);
-    }
-
-    pub fn mul_by_q(&self) -> mnt4_G2 {
-        return mnt4_G2::new(
-            (self.X).Frobenius_map(1) * mnt4_twist_mul_by_q_X,
-            (self.Y).Frobenius_map(1) * mnt4_twist_mul_by_q_Y,
-            (self.Z).Frobenius_map(1),
+        assert!(
+            other.is_special(),
+            "mixed_add requires the second point to be affine"
         );
+
+        if self.equals(other) {
+            return self.double();
+        }
+
+        if self.x == other.x.mul(&self.z) && self.y == other.y.negate().mul(&self.z) {
+            return Self::zero(self.params.clone());
+        }
+
+        let u = self.z.mul(&other.y).sub(&self.y);
+        let uu = u.square();
+
+        let v = self.z.mul(&other.x).sub(&self.x);
+        let vv = v.square();
+
+        let vvv = v.mul(&vv);
+        let r = vv.mul(&self.x);
+
+        let two = Mnt4Fq2::from_u64(2, self.params.fq2_params.clone());
+
+        let a = uu.mul(&self.z).sub(&vvv).sub(&r.mul(&two));
+
+        let x3 = v.mul(&a);
+
+        let y3 = u.mul(&r.sub(&a)).sub(&vvv.mul(&self.y));
+
+        let z3 = vvv.mul(&self.z);
+
+        Self::new(x3, y3, z3, self.params.clone())
     }
 
-    pub fn mul_by_cofactor(&self) -> mnt4_G2 {
-        self.clone() * mnt4_G2::h
+    // ------------------------------------------------------------------------
+    // Scalar multiplication
+    // ------------------------------------------------------------------------
+
+    /// Multiply by a little-endian integer.
+    ///
+    /// scalar[0] contains the least significant 64 bits.
+    pub fn scalar_mul(&self, scalar: &[u64]) -> Self {
+        let mut result = Self::zero(self.params.clone());
+        let mut base = self.clone();
+
+        for limb in scalar {
+            let mut word = *limb;
+
+            for _ in 0..64 {
+                if (word & 1) != 0 {
+                    result = result.add(&base);
+                }
+
+                word >>= 1;
+                base = base.double();
+            }
+        }
+
+        result
     }
 
+    /// Multiply by the G2 cofactor.
+    pub fn mul_by_cofactor(&self) -> Self {
+        self.scalar_mul(&self.params.cofactor)
+    }
+
+    // ------------------------------------------------------------------------
+    // Frobenius / multiplication by q
+    // ------------------------------------------------------------------------
+
+    /// Multiply the point by the base-field characteristic q.
+    ///
+    /// This is the twist Frobenius map used by libff.
+    pub fn mul_by_q(&self) -> Self {
+        if self.is_zero() {
+            return Self::zero(self.params.clone());
+        }
+
+        let x_frob = self.x.frobenius_map(1);
+        let y_frob = self.y.frobenius_map(1);
+        let z_frob = self.z.frobenius_map(1);
+
+        let x = x_frob.mul_by_fp(&self.params.twist_mul_by_q_x);
+
+        let y = y_frob.mul_by_fp(&self.params.twist_mul_by_q_y);
+
+        Self::new(x, y, z_frob, self.params.clone())
+    }
+
+    // ------------------------------------------------------------------------
+    // Curve validation
+    // ------------------------------------------------------------------------
+
+    /// Check the twist curve equation.
+    ///
+    /// Z * (Y^2 - b*Z^2) = X * (X^2 + a*Z^2)
     pub fn is_well_formed(&self) -> bool {
         if self.is_zero() {
             return true;
         }
 
-        //     y^2 = x^3 + ax + b
+        let z2 = self.z.square();
 
-        //     We are using projective, so equation we need to check is actually
+        let y2 = self.y.square();
+        let lhs = self
+            .y
+            .square()
+            .sub(&self.params.twist_coeff_b.mul(&z2))
+            .mul(&self.z);
 
-        //     (y/z)^2 = (x/z)^3 + a (x/z) + b
-        //     z y^2 = x^3  + a z^2 x + b z^3
+        let x2 = self.x.square();
 
-        //     z (y^2 - b z^2) = x ( x^2 + a z^2)
+        let rhs = self.x.mul(&x2.add(&self.params.twist_coeff_a.mul(&z2)));
 
-        let X2 = self.X.squared();
-        let Y2 = self.Y.squared();
-        let Z2 = self.Z.squared();
-        let aZ2 = mnt4_twist_coeff_a * Z2;
+        let _ = y2;
 
-        return (self.Z * (Y2 - mnt4_twist_coeff_b * Z2) == self.X * (X2 + aZ2));
-    }
-
-    pub fn zero() -> Self {
-        return Self::G2_zero();
-    }
-
-    pub fn one() -> Self {
-        return Self::G2_one();
-    }
-
-    pub fn random_element() -> Self {
-        Self::G2_one() * mnt4_Fr::random_element().as_bigint()
-    }
-
-    pub fn batch_to_special_all_non_zeros(vec: &mut Vec<mnt4_G2>) {
-        let mut Z_vec = Vec::with_capacity(vec.len());
-
-        for el in vec.iter() {
-            Z_vec.push(el.Z.clone());
-        }
-        batch_invert::<mnt4_Fq2>(&mut Z_vec);
-
-        let one = mnt4_Fq2::one();
-
-        for i in 0..vec.len() {
-            vec[i] = mnt4_G2::new(vec[i].X * Z_vec[i], vec[i].Y * Z_vec[i], one);
-        }
+        lhs == rhs
     }
 }
 
-impl Add<i32> for mnt4_G2 {
-    type Output = mnt4_G2;
+// ============================================================================
+// Tests
+// ============================================================================
 
-    fn add(self, other: i32) -> Self::Output {
-        let mut r = self;
-        // r += *other.borrow();
-        r
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_g2_zero() {
+        let params = mnt4_g2_params();
+        let zero = Mnt4G2::zero(params);
+
+        assert!(zero.is_zero());
+        assert!(zero.is_well_formed());
     }
-}
 
-impl<O: Borrow<Self>> Add<O> for mnt4_G2 {
-    type Output = mnt4_G2;
+    #[test]
+    fn test_g2_generator_is_well_formed() {
+        let g = Mnt4G2::generator();
 
-    fn add(self, other: O) -> Self::Output {
-        let mut r = self;
-        // r += *other.borrow();
-        r
+        assert!(!g.is_zero());
+        assert!(g.is_well_formed());
     }
-}
 
-impl Sub for mnt4_G2 {
-    type Output = Self;
+    #[test]
+    fn test_g2_add_zero() {
+        let g = Mnt4G2::generator();
+        let zero = Mnt4G2::zero(g.params.clone());
 
-    fn sub(self, other: Self) -> Self::Output {
-        let mut r = self;
-        // r -= other;
-        r
+        assert_eq!(g.add(&zero), g);
+        assert_eq!(zero.add(&g), g);
     }
-}
 
-impl<const N: usize> Mul<bigint<N>> for mnt4_G2 {
-    type Output = mnt4_G2;
+    #[test]
+    fn test_g2_add_inverse() {
+        let g = Mnt4G2::generator();
+        let neg_g = g.negate();
 
-    fn mul(self, rhs: bigint<N>) -> Self::Output {
-        let mut r = self;
-        // r *= *rhs.borrow();
-        r
+        let result = g.add(&neg_g);
+
+        assert!(result.is_zero());
     }
-}
 
-impl<const N: usize, T: Fp_modelConfig<N>> Mul<Fp_model<N, T>> for mnt4_G2 {
-    type Output = mnt4_G2;
+    #[test]
+    fn test_g2_double_equals_add_self() {
+        let g = Mnt4G2::generator();
 
-    fn mul(self, rhs: Fp_model<N, T>) -> Self::Output {
-        let mut r = self;
-        // r *= *rhs.borrow();
-        r
+        assert_eq!(g.double(), g.add(&g));
     }
-}
 
-impl Mul<i32> for mnt4_G2 {
-    type Output = mnt4_G2;
+    #[test]
+    fn test_g2_affine_conversion() {
+        let g = Mnt4G2::generator();
 
-    fn mul(self, other: i32) -> Self::Output {
-        let mut r = self;
-        // r += *other.borrow();
-        r
+        let affine = g.to_affine_element();
+
+        assert!(affine.is_special());
+        assert!(affine.is_well_formed());
+        assert_eq!(g, affine);
     }
-}
-impl<O: Borrow<Self>> Mul<O> for mnt4_G2 {
-    type Output = mnt4_G2;
 
-    fn mul(self, rhs: O) -> Self::Output {
-        let mut r = self;
-        // r *= *rhs.borrow();
-        r
+    #[test]
+    fn test_g2_scalar_mul_zero() {
+        let g = Mnt4G2::generator();
+
+        let result = g.scalar_mul(&[0, 0, 0, 0, 0]);
+
+        assert!(result.is_zero());
     }
-}
 
-impl Neg for mnt4_G2 {
-    type Output = Self;
+    #[test]
+    fn test_g2_scalar_mul_one() {
+        let g = Mnt4G2::generator();
 
-    fn neg(self) -> Self::Output {
-        self
+        let result = g.scalar_mul(&[1, 0, 0, 0, 0]);
+
+        assert_eq!(result, g);
     }
-}
 
-use std::fmt;
-impl fmt::Display for mnt4_G2 {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", Self::one())
+    #[test]
+    fn test_g2_scalar_mul_two() {
+        let g = Mnt4G2::generator();
+
+        let result = g.scalar_mul(&[2, 0, 0, 0, 0]);
+
+        assert_eq!(result, g.double());
     }
-}
 
-impl One for mnt4_G2 {
-    fn one() -> Self {
-        Self::one()
+    #[test]
+    fn test_g2_mixed_add() {
+        let g = Mnt4G2::generator();
+
+        let affine = g.to_affine_element();
+
+        let result = g.mixed_add(&affine);
+
+        assert_eq!(result, g.double());
     }
-}
-
-impl Zero for mnt4_G2 {
-    fn zero() -> Self {
-        Self::zero()
-    }
-    fn is_zero(&self) -> bool {
-        false
-    }
-}
-
-// use std::io::{self, Read, Write};
-// use std::ops::{Add, Mul, Neg, Sub};
-
-// #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-// pub struct Mnt4G2 {
-//     pub x: Fq2,
-//     pub y: Fq2,
-//     pub z: Fq2,
-// }
-
-// impl Mnt4G2 {
-//     pub fn zero() -> Self {
-//         Self {
-//             x: Fq2::zero(),
-//             y: Fq2::one(),
-//             z: Fq2::zero(),
-//         }
-//     }
-
-//     pub fn is_zero(&self) -> bool {
-//         self.z.is_zero()
-//     }
-
-//     pub fn to_affine(&self) -> (Fq2, Fq2, bool) {
-//         if self.is_zero() {
-//             return (Fq2::zero(), Fq2::zero(), true);
-//         }
-//         let z_inv = self.z.inverse().unwrap();
-//         (self.x * z_inv, self.y*z_inv, false)
-//     }
-
-//     fn mul_by_a(val: &Fq2) -> Fq2 {
-//         val * &TWIST_COEFF_A
-//     }
-// }
-
-// impl PartialEq for Mnt4G2 {
-//     fn eq(&self, other: &Self) -> bool {
-//         if self.is_zero() {
-//             return other.is_zero();
-//         }
-//         if other.is_zero() {
-//             return false;
-//         }
-
-//         (self.x * &other.z == other.x * &self.z) && (self.y * &other.z == other.y * &self.z)
-//     }
-// }
-
-// impl<'a> Add<&'a Mnt4G2> for &'a Mnt4G2 {
-//     type Output = Mnt4G2;
-//     fn add(self, other: &'a Mnt4G2) -> Mnt4G2 {
-//         if self.is_zero() {
-//             return *other;
-//         }
-//         if other.is_zero() {
-//             return *self;
-//         }
-
-//         let x1z2 = self.x * &other.z;
-//         let x2z1 = self.z * &other.x;
-//         let y1z2 = self.y * &other.z;
-//         let y2z1 = self.z * &other.y;
-
-//         if x1z2 == x2z1 && y1z2 == y2z1 {
-//             let xx = self.x.square();
-//             let zz = self.z.square();
-//             let w = Mnt4G2::mul_by_a(&zz) + &xx.triple();
-//             let y1z1 = self.y * &self.z;
-//             let s = y1z1.double();
-//             let ss = s.square();
-//             let sss = s * &ss;
-//             let r = self.y * &s;
-//             let rr = r.square();
-//             let b = (self.x + &r).square() - &xx - &rr;
-//             let h = w.square() - &b.double();
-
-//             return Mnt4G2 {
-//                 x: h * &s,
-//                 y: w * &(b - &h) - &rr.double(),
-//                 z: sss,
-//             };
-//         }
-
-//         let z1z2 = self.z * &other.z;
-//         let u = y2z1 - &y1z2;
-//         let v = x2z1 - &x1z2;
-//         let vv = v.square();
-//         let vvv = v * &vv;
-//         let r = vv * &x1z2;
-//         let a = u.square() * &z1z2 - &vvv - &r.double();
-
-//         Mnt4G2 {
-//             x: v * &a,
-//             y: u * (r - &a) - &(vvv*y1z2),
-//             z: vvv * &z1z2,
-//         }
-//     }
-// }
-
-// impl<'a> Mul<&'a Mnt4G2> for &'a BigInt {
-//     type Output = Mnt4G2;
-//     fn mul(self, rhs: &'a Mnt4G2) -> Mnt4G2 {
-//         rhs.scalar_mul(self)
-//     }
-// }
-
-// impl Neg for Mnt4G2 {
-//     type Output = Self;
-//     fn neg(mut self) -> Self {
-//         self.y = -self.y;
-//         self
-//     }
-// }
-
-// impl<'a> Sub<&'a Mnt4G2> for &'a Mnt4G2 {
-//     type Output = Mnt4G2;
-//     fn sub(self, other: &'a Mnt4G2) -> Mnt4G2 {
-//         self + &(-*other)
-//     }
-// }
-
-// impl Mnt4G2 {
-//     pub fn serialize<W: Write>(&self, mut writer: W, compress: bool) -> io::Result<()> {
-//         let (x, y, is_zero) = self.to_affine();
-//         writer.write_all(if is_zero { b"1" } else { b"0" })?;
-//         writer.write_all(b" ")?;
-
-//         writer.write_all(&x.to_bytes())?;
-//         writer.write_all(b" ")?;
-
-//         if compress {
-//             let y_lsb = if y.c0.to_bigint().is_odd() {
-//                 b"1"
-//             } else {
-//                 b"0"
-//             };
-//             writer.write_all(y_lsb)?;
-//         } else {
-//             writer.write_all(&y.to_bytes())?;
-//         }
-//         Ok(())
-//     }
-
-//     pub fn deserialize<R: Read>(mut reader: R, compress: bool) -> io::Result<Self> {
-//         let mut zero_buf = [0u8; 1];
-//         reader.read_exact(&mut zero_buf)?;
-//         let is_zero = zero_buf == b'1';
-
-//         if is_zero {
-//             return Ok(Self::zero());
-//         }
-
-//         let t_x = Fq2::read(&mut reader)?;
-//         let t_y = if !compress {
-//             Fq2::read(&mut reader)?
-//         } else {
-//             let x2 = t_x.square();
-//             let y2 = (x2 + &TWIST_COEFF_A) * &t_x + &TWIST_COEFF_B;
-//             let mut y = y2
-//                 .sqrt()
-//                 .ok_or(io::Error::new(io::ErrorKind::InvalidData, "No sqrt"))?;
-
-//             let mut lsb_buf = [0u8; 1];
-//             reader.read_exact(&mut lsb_buf)?;
-
-//             if y.c0.to_bigint().is_odd() != (lsb_buf == b'1') {
-//                 y = -y;
-//             }
-//             y
-//         };
-
-//         Ok(Self {
-//             x: t_x,
-//             y: t_y,
-//             z: Fq2::one(),
-//         })
-//     }
-// }
-
-use crate::algebra::curves::{
-    AffineRepr, CurveGroup,
-    mnt::mnt4::{MNT4, MNT4Config},
-    short_weierstrass::{Affine, Projective},
-};
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use ark_std::{vec, vec::*};
-use educe::Educe;
-use ffec::algebra::fields::{field::Field, prime_extension::fp2::Fp2};
-
-pub type G2Affine<P> = Affine<<P as MNT4Config>::G2Config>;
-pub type G2Projective<P> = Projective<<P as MNT4Config>::G2Config>;
-
-#[derive(Educe, CanonicalSerialize, CanonicalDeserialize)]
-#[educe(Clone, Debug, PartialEq, Eq)]
-pub struct G2Prepared<P: MNT4Config> {
-    pub x: Fp2<P::Fp2Config>,
-    pub y: Fp2<P::Fp2Config>,
-    pub x_over_twist: Fp2<P::Fp2Config>,
-    pub y_over_twist: Fp2<P::Fp2Config>,
-    pub double_coefficients: Vec<AteDoubleCoefficients<P>>,
-    pub addition_coefficients: Vec<AteAdditionCoefficients<P>>,
-}
-
-impl<P: MNT4Config> Default for G2Prepared<P> {
-    fn default() -> Self {
-        Self::from(G2Affine::<P>::generator())
-    }
-}
-
-impl<P: MNT4Config> From<G2Affine<P>> for G2Prepared<P> {
-    fn from(g: G2Affine<P>) -> Self {
-        let twist_inv = P::TWIST.inverse().unwrap();
-
-        let mut g_prep = G2Prepared {
-            x: g.x,
-            y: g.y,
-            x_over_twist: g.x * &twist_inv,
-            y_over_twist: g.y * &twist_inv,
-            double_coefficients: vec![],
-            addition_coefficients: vec![],
-        };
-
-        let mut r = G2ProjectiveExtended {
-            x: g.x,
-            y: g.y,
-            z: <Fp2<P::Fp2Config>>::one(),
-            t: <Fp2<P::Fp2Config>>::one(),
-        };
-
-        let neg_g = -g;
-        for bit in P::ATE_LOOP_COUNT.iter().skip(1) {
-            let (r2, coeff) = MNT4::doubling_for_flipped_miller_loop(&r);
-            g_prep.double_coefficients.push(coeff);
-            r = r2;
-
-            let (r_temp, add_coeff) = match bit {
-                1 => MNT4::mixed_addition_for_flipped_miller_loop(&g.x, &g.y, &r),
-                -1 => MNT4::mixed_addition_for_flipped_miller_loop(&neg_g.x, &neg_g.y, &r),
-                0 => continue,
-                _ => unreachable!(),
-            };
-            g_prep.addition_coefficients.push(add_coeff);
-            r = r_temp;
-        }
-
-        if P::ATE_IS_LOOP_COUNT_NEG {
-            let rz_inv = r.z.inverse().unwrap();
-            let rz2_inv = rz_inv.square();
-            let rz3_inv = rz_inv * &rz2_inv;
-
-            let minus_r_affine_x = r.x * &rz2_inv;
-            let minus_r_affine_y = -r.y * &rz3_inv;
-
-            let add_result = MNT4::mixed_addition_for_flipped_miller_loop(
-                &minus_r_affine_x,
-                &minus_r_affine_y,
-                &r,
-            );
-            g_prep.addition_coefficients.push(add_result.1);
-        }
-
-        g_prep
-    }
-}
-
-impl<'a, P: MNT4Config> From<&'a G2Affine<P>> for G2Prepared<P> {
-    fn from(g2: &'a G2Affine<P>) -> Self {
-        (*g2).into()
-    }
-}
-
-impl<P: MNT4Config> From<G2Projective<P>> for G2Prepared<P> {
-    fn from(g2: G2Projective<P>) -> Self {
-        g2.into_affine().into()
-    }
-}
-impl<'a, P: MNT4Config> From<&'a G2Projective<P>> for G2Prepared<P> {
-    fn from(g2: &'a G2Projective<P>) -> Self {
-        (*g2).into()
-    }
-}
-
-pub struct G2ProjectiveExtended<P: MNT4Config> {
-    pub x: Fp2<P::Fp2Config>,
-    pub y: Fp2<P::Fp2Config>,
-    pub z: Fp2<P::Fp2Config>,
-    pub t: Fp2<P::Fp2Config>,
-}
-
-#[derive(Educe, CanonicalSerialize, CanonicalDeserialize)]
-#[educe(Clone, Debug, PartialEq, Eq)]
-pub struct AteDoubleCoefficients<P: MNT4Config> {
-    pub c_h: Fp2<P::Fp2Config>,
-    pub c_4c: Fp2<P::Fp2Config>,
-    pub c_j: Fp2<P::Fp2Config>,
-    pub c_l: Fp2<P::Fp2Config>,
-}
-
-#[derive(Educe, CanonicalSerialize, CanonicalDeserialize)]
-#[educe(Clone, Debug, PartialEq, Eq)]
-pub struct AteAdditionCoefficients<P: MNT4Config> {
-    pub c_l1: Fp2<P::Fp2Config>,
-    pub c_rz: Fp2<P::Fp2Config>,
 }
