@@ -618,4 +618,25 @@ mod tests {
 
         assert!(root.squared().equals(&square));
     }
+    #[test]
+    fn test_bn254_fq6_frobenius_cycle() {
+        use crate::algebra::curves::alt_bn128::alt_bn128_init::bn254_fp12_params;
+
+        let params = bn254_fp12_params();
+        let fp6_params = params.fp6_params;
+
+        let fp2_params = fp6_params.fp2_params.clone();
+
+        let x = Fp6::new(
+            Fp2::from_u64(3, fp2_params.clone()),
+            Fp2::from_u64(5, fp2_params.clone()),
+            Fp2::from_u64(7, fp2_params),
+            fp6_params,
+        );
+
+        assert!(
+            x.frobenius_map(6).equals(&x),
+            "BN254 Fp6 Frobenius^6 must be identity"
+        );
+    }
 }

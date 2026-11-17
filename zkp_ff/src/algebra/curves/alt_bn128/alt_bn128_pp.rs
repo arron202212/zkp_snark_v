@@ -1,204 +1,139 @@
-use crate::{
-    CoeffsConfig, PublicParams, PublicParamsType, affine_ate_G_precomp_typeConfig,
-    algebra::curves::{
-        alt_bn128::{
-            alt_bn128_fields::{
-                alt_bn128_Fq, alt_bn128_Fq2, alt_bn128_Fq12, alt_bn128_Fr, alt_bn128_GT,
-            },
-            alt_bn128_g1::alt_bn128_G1,
-            alt_bn128_g2::alt_bn128_G2,
-            alt_bn128_init::init_alt_bn128_params,
-            alt_bn128_pairing::{
-                alt_bn128_G1_precomp, alt_bn128_G2_precomp, alt_bn128_double_miller_loop,
-                alt_bn128_final_exponentiation, alt_bn128_miller_loop, alt_bn128_pairing,
-                alt_bn128_precompute_G1, alt_bn128_precompute_G2, alt_bn128_reduced_pairing,
-            },
-        },
-        public_params,
-    },
+use crate::algebra::curves::alt_bn128::alt_bn128_g1::G1;
+use crate::algebra::curves::alt_bn128::alt_bn128_g2::G2;
+use crate::algebra::fields::prime_base::fp::Fp;
+use crate::algebra::fields::prime_extension::fp2::Fp2;
+use crate::algebra::fields::prime_extension::fp12_2over3over2::Fp12;
+
+use super::alt_bn128_init::init_alt_bn128_params;
+
+use super::alt_bn128_pairing::{
+    AltBn128G1Precomp, AltBn128G2Precomp, alt_bn128_ate_miller_loop, alt_bn128_ate_precompute_g1,
+    alt_bn128_ate_precompute_g2, alt_bn128_final_exponentiation, alt_bn128_reduced_pairing,
 };
 
-use ffec::{
-    PpConfig,
-    field_utils::bigint::bigint,
-    {One, Zero},
-};
-use std::{
-    fmt,
-    ops::{Add, Mul, Sub},
-};
+/// BN254 / alt_bn128 scalar field.
+pub type AltBn128Fr = Fp<4>;
 
-#[derive(Default, Clone, Debug, PartialEq)]
-pub struct alt_bn128_pp;
+/// BN254 / alt_bn128 base field.
+pub type AltBn128Fq = Fp<4>;
 
-impl Add for alt_bn128_pp {
-    type Output = Self;
+/// BN254 quadratic extension field.
+pub type AltBn128Fqe = Fp2<4>;
 
-    fn add(self, other: Self) -> Self::Output {
-        let mut r = self;
-        // r -= other;
-        r
-    }
-}
-impl Sub for alt_bn128_pp {
-    type Output = Self;
+/// BN254 degree-12 extension field.
+pub type AltBn128Fqk = Fp12;
 
-    fn sub(self, other: Self) -> Self::Output {
-        let mut r = self;
-        // r -= other;
-        r
-    }
-}
-impl Mul for alt_bn128_pp {
-    type Output = Self;
+/// BN254 target group.
+pub type AltBn128GT = Fp12;
 
-    fn mul(self, rhs: Self) -> Self::Output {
-        let mut r = self;
-        // r *= *rhs.borrow();
-        r
-    }
-}
-impl Mul<&Self> for alt_bn128_pp {
-    type Output = Self;
+/// BN254 pairing parameter set.
+///
+/// This corresponds to libff's `alt_bn128_pp`.
+pub struct AltBn128PP;
 
-    fn mul(self, rhs: &Self) -> Self::Output {
-        let mut r = self;
-        // r *= *rhs.borrow();
-        r
-    }
-}
-impl Mul<bigint<4>> for alt_bn128_pp {
-    type Output = Self;
+impl AltBn128PP {
+    /// Whether this curve supports affine pairing.
+    ///
+    /// Matches libff:
+    /// `static const bool has_affine_pairing = false`.
+    pub const HAS_AFFINE_PAIRING: bool = false;
 
-    fn mul(self, rhs: bigint<4>) -> Self::Output {
-        let mut r = self;
-        // r *= *rhs.borrow();
-        r
-    }
-}
-impl One for alt_bn128_pp {
-    fn one() -> Self {
-        Self::default()
-    }
-}
-
-impl Zero for alt_bn128_pp {
-    fn zero() -> Self {
-        Self::default()
-    }
-    fn is_zero(&self) -> bool {
-        false
-    }
-}
-impl std::fmt::Display for alt_bn128_pp {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} ", 1)
-    }
-}
-impl PpConfig for alt_bn128_pp {
-    type BigIntT = bigint<1>;
-}
-#[derive(Clone, Default)]
-pub struct Coeffs;
-impl CoeffsConfig for Coeffs {
-    // type FieldT=alt_bn128_Fr;
-}
-pub struct affine_ate_precomp;
-impl affine_ate_G_precomp_typeConfig for affine_ate_precomp {
-    type CC = Coeffs;
-}
-impl PublicParamsType for alt_bn128_pp {
-    type Fp_type = alt_bn128_Fr;
-    type G1_type = alt_bn128_G1;
-    type G2_type = alt_bn128_G2;
-    type G1_precomp_type = alt_bn128_G1_precomp;
-    type G2_precomp_type = alt_bn128_G2_precomp;
-    type Fq_type = alt_bn128_Fq;
-    type Fqe_type = alt_bn128_Fq2;
-    type Fqk_type = alt_bn128_Fq12;
-    type GT_type = alt_bn128_GT;
-    type affine_ate_G1_precomp_type = affine_ate_precomp;
-    type affine_ate_G2_precomp_type = affine_ate_precomp;
-}
-
-impl PublicParams for alt_bn128_pp {
-    type Fr = alt_bn128_Fr;
-    type G1 = alt_bn128_G1;
-    type G2 = alt_bn128_G2;
-    type GT = alt_bn128_GT;
-    type affine_ate_G1_precomp = affine_ate_precomp;
-    type affine_ate_G2_precomp = affine_ate_precomp;
-    const has_affine_pairing: bool = false;
-
-    fn init_public_params() {
+    /// Initialize all BN254 public parameters.
+    ///
+    /// This must be called before using curve and pairing operations
+    /// that depend on initialized public parameters.
+    pub fn init_public_params() {
         init_alt_bn128_params();
     }
 
-    fn final_exponentiation(elt: &Self::Fqk) -> Self::GT {
+    /// Final exponentiation.
+    ///
+    /// Converts an Fq12 Miller-loop result into an element of GT.
+    pub fn final_exponentiation(elt: &AltBn128Fqk) -> AltBn128GT {
         alt_bn128_final_exponentiation(elt)
     }
 
-    fn precompute_G1(P: &Self::G1) -> Self::G1_precomp {
-        alt_bn128_precompute_G1(P)
+    /// Precompute a G1 point for the Miller loop.
+    pub fn precompute_g1(p: &AltBn128G1) -> AltBn128G1Precomp {
+        alt_bn128_ate_precompute_g1(p)
     }
 
-    fn precompute_G2(Q: &Self::G2) -> Self::G2_precomp {
-        alt_bn128_precompute_G2(Q)
+    /// Precompute a G2 point for the Miller loop.
+    pub fn precompute_g2(q: &AltBn128G2) -> AltBn128G2Precomp {
+        alt_bn128_ate_precompute_g2(q)
     }
 
-    fn affine_ate_precompute_G1(P: &Self::G1) -> Self::affine_ate_G1_precomp {
-        unimplemented!("alt_bn128_affine_ate_precompute_G1");
-    }
-    fn affine_ate_precompute_G2(Q: &Self::G2) -> Self::affine_ate_G2_precomp {
-        unimplemented!("alt_bn128_affine_ate_precompute_G2");
-    }
-
-    fn affine_ate_miller_loop(
-        prec_P: &Self::affine_ate_G1_precomp,
-        prec_Q: &Self::affine_ate_G2_precomp,
-    ) -> Self::Fqk {
-        unimplemented!("alt_bn128_affine_ate_miller_loop");
-    }
-    fn affine_ate_e_over_e_miller_loop(
-        prec_P1: &Self::affine_ate_G1_precomp,
-        prec_Q1: &Self::affine_ate_G2_precomp,
-        prec_P2: &Self::affine_ate_G1_precomp,
-        prec_Q2: &Self::affine_ate_G2_precomp,
-    ) -> Self::Fqk {
-        unimplemented!("alt_bn128_affine_ate_miller_loop");
-    }
-    fn affine_ate_e_times_e_over_e_miller_loop(
-        prec_P1: &Self::affine_ate_G1_precomp,
-        prec_Q1: &Self::affine_ate_G2_precomp,
-        prec_P2: &Self::affine_ate_G1_precomp,
-        prec_Q2: &Self::affine_ate_G2_precomp,
-        prec_P3: &Self::affine_ate_G1_precomp,
-        prec_Q3: &Self::affine_ate_G2_precomp,
-    ) -> Self::Fqk {
-        unimplemented!("alt_bn128_affine_ate_e_times_e_over_e_miller_loop");
+    /// Miller loop using precomputed G1 and G2 points.
+    ///
+    /// The result is in Fq12 and has not undergone final exponentiation.
+    pub fn miller_loop(prec_p: &AltBn128G1Precomp, prec_q: &AltBn128G2Precomp) -> AltBn128Fqk {
+        alt_bn128_ate_miller_loop(prec_p, prec_q)
     }
 
-    fn miller_loop(prec_P: &Self::G1_precomp, prec_Q: &Self::G2_precomp) -> Self::Fqk {
-        alt_bn128_miller_loop(prec_P, prec_Q)
+    /// Double Miller loop.
+    ///
+    /// Computes:
+    ///
+    ///     Miller(P1, Q1) * Miller(P2, Q2)
+    ///
+    /// This implementation reuses the existing single Miller-loop
+    /// implementation. It is mathematically equivalent to the
+    /// simultaneous double Miller loop, but is not as optimized.
+    pub fn double_miller_loop(
+        prec_p1: &AltBn128G1Precomp,
+        prec_q1: &AltBn128G2Precomp,
+        prec_p2: &AltBn128G1Precomp,
+        prec_q2: &AltBn128G2Precomp,
+    ) -> AltBn128Fqk {
+        let f1 = Self::miller_loop(prec_p1, prec_q1);
+        let f2 = Self::miller_loop(prec_p2, prec_q2);
+
+        f1.mul(&f2)
     }
 
-    fn double_miller_loop(
-        prec_P1: &Self::G1_precomp,
-        prec_Q1: &Self::G2_precomp,
-        prec_P2: &Self::G1_precomp,
-        prec_Q2: &Self::G2_precomp,
-    ) -> Self::Fqk {
-        alt_bn128_double_miller_loop(prec_P1, prec_Q1, prec_P2, prec_Q2)
+    /// Raw pairing.
+    ///
+    /// Returns the Miller-loop result without final exponentiation.
+    pub fn pairing(p: &AltBn128G1, q: &AltBn128G2) -> AltBn128Fqk {
+        let prec_p = Self::precompute_g1(p);
+        let prec_q = Self::precompute_g2(q);
+
+        Self::miller_loop(&prec_p, &prec_q)
     }
 
-    fn pairing(P: &Self::G1, Q: &Self::G2) -> Self::Fqk {
-        alt_bn128_pairing(P, Q)
+    /// Reduced pairing.
+    ///
+    /// Returns the result after final exponentiation, in GT.
+    pub fn reduced_pairing(p: &AltBn128G1, q: &AltBn128G2) -> AltBn128GT {
+        alt_bn128_reduced_pairing(p, q)
+    }
+}
+
+/// C++-style compatibility alias.
+pub type AltBn128G1 = G1;
+
+/// C++-style compatibility alias.
+pub type AltBn128G2 = G2;
+
+/// C++-style compatibility aliases for precomputation.
+pub type AltBn128G1Precomputation = AltBn128G1Precomp;
+pub type AltBn128G2Precomputation = AltBn128G2Precomp;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_alt_bn128_pp_affine_pairing_flag() {
+        assert!(!AltBn128PP::HAS_AFFINE_PAIRING);
     }
 
-    fn reduced_pairing(P: &Self::G1, Q: &Self::G2) -> Self::GT {
-        alt_bn128_reduced_pairing(P, Q)
-    }
-    fn affine_reduced_pairing(P: &Self::G1, Q: &Self::G2) -> Self::GT {
-        unimplemented!("alt_bn128");
+    #[test]
+    fn test_alt_bn128_pp_type_aliases() {
+        let _: Option<AltBn128Fr> = None;
+        let _: Option<AltBn128Fq> = None;
+        let _: Option<AltBn128Fqe> = None;
+        let _: Option<AltBn128Fqk> = None;
+        let _: Option<AltBn128GT> = None;
     }
 }

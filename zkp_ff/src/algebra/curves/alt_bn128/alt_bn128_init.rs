@@ -302,3 +302,18 @@ mod bn254_fp12_params_tests {
         }
     }
 }
+/// Initialize BN254 field parameters.
+///
+/// This implementation constructs parameters on demand.
+/// Unlike the C++ implementation, it does not depend on global
+/// mutable field parameter objects.
+pub fn init_alt_bn128_fields_impl() {
+    let _ = bn254_fq_params();
+    let _ = bn254_fq2_params();
+    let _ = bn254_fp12_params();
+}
+
+/// Initialize all BN254 public parameters.
+pub fn init_alt_bn128_params() {
+    init_alt_bn128_fields_impl();
+}
